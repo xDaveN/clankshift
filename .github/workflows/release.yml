@@ -1,0 +1,81 @@
+# release-plz keeps a release PR open with the next version + changelog (from Conventional Commits).
+# Merging it tags the version, creates the GitHub Release, and the Windows zip is attached.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  release:
+    name: Release
+    if: github.repository_owner == 'xDaveN'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - id: tag
+        env:
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: echo "tag=$(echo "${RELEASES:-[]}" | jq -r '.[0].tag // empty')" >> "$GITHUB_OUTPUT"
+
+  release-pr:
+    name: Release PR
+    if: github.repository_owner == 'xDaveN'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          # PRs opened with the default token do not trigger CI; RELEASE_PLZ_TOKEN (a fine-grained
+          # token, see CONTRIBUTING.md) makes the required checks run on the release PR.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+  windows-zip:
+    name: Windows zip
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+      - run: cargo build --release --locked
+      - name: Package and upload
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $zip = "clankshift-$env:TAG-windows-x64.zip"
+          Compress-Archive -Path target/release/clankshift.exe, README.md, LICENSE-MIT, LICENSE-APACHE -DestinationPath $zip
+          gh release upload $env:TAG $zip

@@ -1,0 +1,6 @@
+[workspace]
+# Versions come from git tags; nothing is published to crates.io.
+git_only = true
+# semver-checks is for library APIs; ClankShift is an application.
+semver_check = false
+git_release_enable = true
