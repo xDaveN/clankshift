@@ -84,7 +84,7 @@ fn parse_stream(lines: &[String]) -> Result<Option<i64>, String> {
         }
     }
     match result {
-        Some(_) => Err("Claude answered but did not report its usage window".into()),
+        Some(_) => Err("Claude answered but did not report its 5h limit".into()),
         None => Err(String::new()),
     }
 }

@@ -36,7 +36,7 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     exec(&program, &model)?;
     let (resets_at, _) = read(&program)?;
     if resets_at.is_none() {
-        return Err("Codex did not report a window after the anchor request".into());
+        return Err("Codex did not report its 5h limit after the request".into());
     }
     Ok((Outcome::Anchored, resets_at))
 }
@@ -120,7 +120,7 @@ fn parse_rate_limits(result: &Value) -> Result<Option<i64>, String> {
         .map(|slot| &rl[slot])
         .find(|w| w["windowDurationMins"].as_i64().is_some_and(|m| m <= 360))
         .map(|w| w["resetsAt"].as_i64())
-        .ok_or_else(|| "Codex reports no 5-hour window for this account".into())
+        .ok_or_else(|| "Codex reports no 5h limit for this account".into())
 }
 
 fn pick_model(list: &Value) -> Result<String, String> {

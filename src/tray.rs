@@ -1,7 +1,7 @@
 //! The resident tray process. Sleeps in the OS event loop until a menu click, a finished provider
 //! operation, or the next scheduled moment — no polling, no provider processes while idle.
 //!
-//! User-facing wording says "start a window"; internally that operation is called "anchor".
+//! User-facing wording says "start a 5h limit"; internally that operation is called "anchor".
 
 use std::time::{Duration, Instant};
 
@@ -188,8 +188,8 @@ impl App {
         match result {
             Ok((outcome, resets_at)) => {
                 let what = match outcome {
-                    Outcome::Anchored => "started a new window",
-                    Outcome::AlreadyActive => "window was already running",
+                    Outcome::Anchored => "started a new 5h limit",
+                    Outcome::AlreadyActive => "5h limit was already running",
                 };
                 log(&format!(
                     "{}: {what}, resets {}",
@@ -243,7 +243,7 @@ impl App {
                     format!("resets at {} (started by ClankShift)", fmt_time(r, now))
                 }
                 Some(r) if r > now => format!("resets at {}", fmt_time(r, now)),
-                Some(r) => format!("last known window ended {}", fmt_time(r, now)),
+                Some(r) => format!("last known 5h limit ended {}", fmt_time(r, now)),
                 None => "not checked yet".to_string(),
             }
         };
@@ -267,18 +267,18 @@ impl App {
             let active = known_active(p.state(&self.state).resets_at, now);
             items.start[i].set_enabled(p.config(&self.config).enabled && !self.busy[i] && !active);
             let suffix = if active { " (already running)" } else { "" };
-            items.start[i].set_text(format!("Start {} window now{suffix}", p.name()));
+            items.start[i].set_text(format!("Start {} 5h limit now{suffix}", p.name()));
         }
         items.auto.set_checked(self.config.auto_anchor);
         items
             .auto
             .set_text(match (&self.config_error, self.next_daily()) {
-                (Some(_), _) => "Start windows automatically (settings file error)".to_string(),
+                (Some(_), _) => "Start 5h limits automatically (settings file error)".to_string(),
                 (None, Some(t)) => format!(
-                    "Start windows automatically (next {})",
+                    "Start 5h limits automatically (next {})",
                     fmt_time(t.as_second(), now)
                 ),
-                (None, None) => "Start windows automatically".to_string(),
+                (None, None) => "Start 5h limits automatically".to_string(),
             });
         items.settings.set_enabled(!self.settings_open);
         // Windows truncates tray tooltips at 127 characters.

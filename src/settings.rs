@@ -88,7 +88,7 @@ impl Settings {
         });
         if self.daily_on {
             ui.weak(format!(
-                "→ those windows reset at {:02}:{:02}",
+                "→ those 5h limits reset at {:02}:{:02}",
                 (self.hour + 5) % 24,
                 self.minute
             ));
@@ -108,10 +108,10 @@ impl eframe::App for Settings {
                     ui.separator();
                 }
                 ui.label(
-                    "Codex and Claude limits run in 5-hour windows that start with your first \
-                     message. ClankShift sends a tiny message at the times you choose, so a window \
-                     starts earlier and resets sooner. It never does this while a window is \
-                     already running.",
+                    "Codex and Claude each have a 5h limit that starts with your first message and \
+                     resets 5 hours later. ClankShift sends a tiny message at the times you choose, \
+                     so your 5h limit starts earlier and resets sooner. It never does this while a \
+                     5h limit is already running.",
                 );
 
                 ui.add_space(10.0);
@@ -120,7 +120,7 @@ impl eframe::App for Settings {
                 ui.checkbox(&mut self.cfg.claude.enabled, "Anthropic Claude");
 
                 ui.add_space(10.0);
-                ui.heading("Start windows automatically");
+                ui.heading("Start 5h limits automatically");
                 ui.checkbox(&mut self.cfg.auto_anchor, "On");
                 ui.add_enabled_ui(self.cfg.auto_anchor, |ui| {
                     ui.indent("auto", |ui| {

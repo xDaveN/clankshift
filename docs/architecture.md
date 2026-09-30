@@ -46,11 +46,14 @@ the status check. It is skipped while a previously reported window is still runn
 **Window classification** (`schedule.rs`): a reported reset time within 10 minutes of
 `now + 5h` means the window started with this call; anything earlier means it was already running.
 
+## Terminology
+
+User-facing text says **5h limit** and "start"; code and these docs say **window** and **anchor**.
+Keep UI wording free of "window"/"anchor".
+
 ## Triggers
 
-The UI says "start a window"; the code calls this *anchoring*.
-
-- **Manual:** *Start … window now* in the tray.
+- **Manual:** *Start … 5h limit now* in the tray.
 - **Start:** when ClankShift starts. With *Start at login* (per-user `Run` registry key, no
   admin rights), this is the login trigger.
 - **Daily:** at a local time (DST-aware). If missed by more than an hour (asleep/off), it is skipped.
