@@ -19,7 +19,8 @@ pub struct ProviderState {
     /// 5-hour window reset time as last reported by the provider, epoch seconds.
     /// Authoritative until it passes; after that the window state is unknown.
     pub resets_at: Option<i64>,
-    pub used_percent: Option<f64>,
+    /// Whether ClankShift itself started the window that `resets_at` belongs to.
+    pub started_by_us: bool,
     /// When the provider last reported state to us.
     pub checked_at: Option<i64>,
     pub last_error: Option<String>,

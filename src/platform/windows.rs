@@ -119,3 +119,7 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
         Err(format!("registry error {err}"))
     }
 }
+
+pub fn open_folder(path: &std::path::Path) {
+    let _ = Command::new("explorer").arg(path).spawn();
+}

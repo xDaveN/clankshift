@@ -10,6 +10,7 @@ src/
   main.rs         mode dispatch
   tray.rs         tray menu + event loop + triggers
   settings.rs     settings window
+  icon.rs         app icon drawn in code (tray, settings, and the .exe via build.rs)
   config.rs       user config (TOML, %APPDATA%)
   state.rs        observed provider state (JSON, %LOCALAPPDATA%) + action log
   schedule.rs     pure timing decisions (tested)
@@ -47,12 +48,20 @@ the status check. It is skipped while a previously reported window is still runn
 
 ## Triggers
 
-- **Manual:** *Anchor … now* in the tray.
+The UI says "start a window"; the code calls this *anchoring*.
+
+- **Manual:** *Start … window now* in the tray.
 - **Start:** when ClankShift starts. With *Start at login* (per-user `Run` registry key, no
   admin rights), this is the login trigger.
 - **Daily:** at a local time (DST-aware). If missed by more than an hour (asleep/off), it is skipped.
 
 All triggers do nothing for a provider whose window is known to be running.
+
+## What the tray shows
+
+Only provider-reported facts: the current window's reset time and whether ClankShift started it,
+or when the last known window ended. No usage percentages: they go stale immediately without
+polling, and polling Claude would spend quota.
 
 ## Decisions
 

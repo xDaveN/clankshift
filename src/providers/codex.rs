@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Observation, Outcome, Session, now, resolve};
+use super::{Outcome, Session, now, resolve};
 use crate::config::ProviderConfig;
 use crate::schedule::started_now;
 
@@ -21,12 +21,12 @@ use crate::schedule::started_now;
 /// and if none are listed by `model/list` the account's default model is used at low effort.
 const CHEAP_MODELS: &[&str] = &["gpt-6-luna", "gpt-5.6-luna"];
 
-pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Observation), String> {
+pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     let program = resolve(&cfg.command, "codex")?;
     let started = now();
-    let (obs, models) = read(&program)?;
-    if obs.resets_at.is_some_and(|r| !started_now(r, started)) {
-        return Ok((Outcome::AlreadyActive, obs));
+    let (resets_at, models) = read(&program)?;
+    if resets_at.is_some_and(|r| !started_now(r, started)) {
+        return Ok((Outcome::AlreadyActive, resets_at));
     }
     let model = if cfg.model.trim().is_empty() {
         pick_model(&models)?
@@ -34,15 +34,15 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Observation), String> {
         cfg.model.trim().to_string()
     };
     exec(&program, &model)?;
-    let (obs, _) = read(&program)?;
-    if obs.resets_at.is_none() {
+    let (resets_at, _) = read(&program)?;
+    if resets_at.is_none() {
         return Err("Codex did not report a window after the anchor request".into());
     }
-    Ok((Outcome::Anchored, obs))
+    Ok((Outcome::Anchored, resets_at))
 }
 
 /// One short app-server session: rate limits + model list.
-fn read(program: &std::path::PathBuf) -> Result<(Observation, Value), String> {
+fn read(program: &std::path::PathBuf) -> Result<(Option<i64>, Value), String> {
     let mut s = Session::spawn(program, &["app-server"], Duration::from_secs(45))?;
     s.send(r#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"clankshift","title":"ClankShift","version":"0.1.0"}}}"#)?;
     s.send(r#"{"method":"initialized"}"#)?;
@@ -111,17 +111,15 @@ fn exec(program: &std::path::PathBuf, model: &str) -> Result<(), String> {
     ))
 }
 
-/// The 5-hour window is whichever slot has a short duration (weekly-only accounts have none).
-fn parse_rate_limits(result: &Value) -> Result<Observation, String> {
+/// Reset time of the 5-hour window: whichever slot has a short duration (weekly-only accounts have none).
+/// Ok(None) = the window exists but reports no reset time.
+fn parse_rate_limits(result: &Value) -> Result<Option<i64>, String> {
     let rl = &result["rateLimits"];
     ["primary", "secondary"]
         .iter()
         .map(|slot| &rl[slot])
         .find(|w| w["windowDurationMins"].as_i64().is_some_and(|m| m <= 360))
-        .map(|w| Observation {
-            resets_at: w["resetsAt"].as_i64(),
-            used_percent: w["usedPercent"].as_f64(),
-        })
+        .map(|w| w["resetsAt"].as_i64())
         .ok_or_else(|| "Codex reports no 5-hour window for this account".into())
 }
 
@@ -153,13 +151,7 @@ mod tests {
     fn parses_real_rate_limit_response() {
         // Captured from codex-cli 0.159.1 (trimmed).
         let r: Value = serde_json::from_str(r#"{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":1790801242},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1791197709},"planType":"plus"}}"#).unwrap();
-        assert_eq!(
-            parse_rate_limits(&r).unwrap(),
-            Observation {
-                resets_at: Some(1790801242),
-                used_percent: Some(0.0)
-            }
-        );
+        assert_eq!(parse_rate_limits(&r).unwrap(), Some(1790801242));
     }
 
     #[test]
@@ -167,9 +159,9 @@ mod tests {
         let weekly_only = json!({"rateLimits":{"primary":{"usedPercent":5,"windowDurationMins":10080,"resetsAt":9},"secondary":null}});
         assert!(parse_rate_limits(&weekly_only).is_err());
         let swapped = json!({"rateLimits":{"primary":{"windowDurationMins":10080,"resetsAt":9},"secondary":{"windowDurationMins":300,"resetsAt":7}}});
-        assert_eq!(parse_rate_limits(&swapped).unwrap().resets_at, Some(7));
+        assert_eq!(parse_rate_limits(&swapped).unwrap(), Some(7));
         let no_reset = json!({"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300}}});
-        assert_eq!(parse_rate_limits(&no_reset).unwrap().resets_at, None);
+        assert_eq!(parse_rate_limits(&no_reset).unwrap(), None);
     }
 
     #[test]

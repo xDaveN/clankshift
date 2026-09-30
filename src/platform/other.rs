@@ -23,3 +23,12 @@ pub fn autostart_enabled() -> bool {
 pub fn set_autostart(_on: bool) -> Result<(), String> {
     Err("Start at login is not supported on this platform yet".into())
 }
+
+pub fn open_folder(path: &std::path::Path) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = Command::new(opener).arg(path).spawn();
+}

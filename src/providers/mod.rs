@@ -21,13 +21,6 @@ pub enum Provider {
     Claude,
 }
 
-/// Window state as reported by the provider (never guessed).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Observation {
-    pub resets_at: Option<i64>,
-    pub used_percent: Option<f64>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// We started a new window.
@@ -68,7 +61,7 @@ impl Provider {
     }
 
     /// Blocking (seconds to a minute); run on a worker thread.
-    pub fn anchor(self, cfg: &ProviderConfig) -> Result<(Outcome, Observation), String> {
+    pub fn anchor(self, cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
         match self {
             Provider::Codex => codex::anchor(cfg),
             Provider::Claude => claude::anchor(cfg),

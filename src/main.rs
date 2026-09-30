@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod config;
+mod icon;
 mod platform;
 mod providers;
 mod schedule;

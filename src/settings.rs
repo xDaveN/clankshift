@@ -3,15 +3,16 @@
 
 use eframe::egui;
 
-use crate::config::{Config, parse_hhmm};
-use crate::platform;
+use crate::config::Config;
+use crate::{icon, platform};
 
 struct Settings {
     cfg: Config,
     load_error: Option<String>,
     autostart: bool,
     daily_on: bool,
-    daily_text: String,
+    hour: u8,
+    minute: u8,
     error: Option<String>,
 }
 
@@ -20,9 +21,11 @@ pub fn run() {
         Ok(c) => (c, None),
         Err(e) => (Config::default(), Some(e)),
     };
+    let daily = cfg.daily_time();
     let app = Settings {
-        daily_on: cfg.daily_at.is_some(),
-        daily_text: cfg.daily_at.clone().unwrap_or_else(|| "07:00".into()),
+        daily_on: daily.is_some(),
+        hour: daily.map_or(7, |t| t.hour() as u8),
+        minute: daily.map_or(0, |t| t.minute() as u8),
         autostart: platform::autostart_enabled(),
         cfg,
         load_error,
@@ -31,8 +34,15 @@ pub fn run() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ClankShift Settings")
-            .with_inner_size([380.0, 360.0])
-            .with_resizable(false),
+            .with_icon(egui::IconData {
+                rgba: icon::rgba(64),
+                width: 64,
+                height: 64,
+            })
+            .with_inner_size([420.0, 450.0])
+            .with_resizable(false)
+            .with_maximize_button(false),
+        centered: true,
         ..Default::default()
     };
     let _ = eframe::run_native(
@@ -44,72 +54,117 @@ pub fn run() {
 
 impl Settings {
     fn save(&mut self) -> Result<(), String> {
-        self.cfg.daily_at = if self.daily_on {
-            let t = parse_hhmm(&self.daily_text).ok_or("Daily time must be HH:MM, e.g. 07:00")?;
-            Some(t.strftime("%H:%M").to_string())
-        } else {
-            None
-        };
+        self.cfg.daily_at = self
+            .daily_on
+            .then(|| format!("{:02}:{:02}", self.hour, self.minute));
         if self.autostart != platform::autostart_enabled() || self.autostart {
             platform::set_autostart(self.autostart)?; // re-writing refreshes the path if the exe moved
         }
         self.cfg.save()
+    }
+
+    fn daily_row(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.daily_on, "Every day at");
+            ui.add_enabled_ui(self.daily_on, |ui| {
+                egui::ComboBox::from_id_salt("hour")
+                    .width(44.0)
+                    .selected_text(format!("{:02}", self.hour))
+                    .show_ui(ui, |ui| {
+                        for h in 0..24 {
+                            ui.selectable_value(&mut self.hour, h, format!("{h:02}"));
+                        }
+                    });
+                ui.label(":");
+                egui::ComboBox::from_id_salt("minute")
+                    .width(44.0)
+                    .selected_text(format!("{:02}", self.minute))
+                    .show_ui(ui, |ui| {
+                        for m in (0..60).step_by(5) {
+                            ui.selectable_value(&mut self.minute, m, format!("{m:02}"));
+                        }
+                    });
+            });
+        });
+        if self.daily_on {
+            ui.weak(format!(
+                "→ those windows reset at {:02}:{:02}",
+                (self.hour + 5) % 24,
+                self.minute
+            ));
+        }
     }
 }
 
 impl eframe::App for Settings {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ui, |ui| {
-            if let Some(e) = &self.load_error {
-                ui.colored_label(ui.visuals().error_fg_color, format!("Could not read settings, showing defaults:\n{e}"));
-                ui.separator();
-            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if let Some(e) = &self.load_error {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!("Could not read settings, showing defaults:\n{e}"),
+                    );
+                    ui.separator();
+                }
+                ui.label(
+                    "Codex and Claude limits run in 5-hour windows that start with your first \
+                     message. ClankShift sends a tiny message at the times you choose, so a window \
+                     starts earlier and resets sooner. It never does this while a window is \
+                     already running.",
+                );
 
-            ui.heading("Providers");
-            ui.checkbox(&mut self.cfg.codex.enabled, "OpenAI Codex");
-            ui.checkbox(&mut self.cfg.claude.enabled, "Anthropic Claude");
+                ui.add_space(10.0);
+                ui.heading("Providers");
+                ui.checkbox(&mut self.cfg.codex.enabled, "OpenAI Codex");
+                ui.checkbox(&mut self.cfg.claude.enabled, "Anthropic Claude");
 
-            ui.add_space(8.0);
-            ui.heading("Automatic anchoring");
-            ui.checkbox(&mut self.cfg.auto_anchor, "Anchor automatically");
-            ui.add_enabled_ui(self.cfg.auto_anchor, |ui| {
-                ui.checkbox(&mut self.cfg.anchor_on_start, "When ClankShift starts");
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.daily_on, "Every day at");
-                    ui.add_enabled(self.daily_on, egui::TextEdit::singleline(&mut self.daily_text).desired_width(50.0));
-                });
-            });
-            ui.label("A window is only started when none is running. Resets come 5 hours after the anchor.");
-
-            ui.add_space(8.0);
-            ui.heading("System");
-            ui.checkbox(&mut self.autostart, "Start ClankShift when I log in");
-
-            ui.add_space(8.0);
-            ui.collapsing("Advanced", |ui| {
-                ui.label("CLI paths (leave empty to find them on PATH)");
-                for (name, p) in [("codex", &mut self.cfg.codex), ("claude", &mut self.cfg.claude)] {
-                    ui.horizontal(|ui| {
-                        ui.label(name);
-                        ui.text_edit_singleline(&mut p.command);
+                ui.add_space(10.0);
+                ui.heading("Start windows automatically");
+                ui.checkbox(&mut self.cfg.auto_anchor, "On");
+                ui.add_enabled_ui(self.cfg.auto_anchor, |ui| {
+                    ui.indent("auto", |ui| {
+                        ui.checkbox(
+                            &mut self.cfg.anchor_on_start,
+                            "When ClankShift starts (e.g. when you log in)",
+                        );
+                        self.daily_row(ui);
                     });
-                }
-            });
+                });
 
-            ui.add_space(8.0);
-            if let Some(e) = &self.error {
-                ui.colored_label(ui.visuals().error_fg_color, e);
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    match self.save() {
-                        Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
-                        Err(e) => self.error = Some(e),
+                ui.add_space(10.0);
+                ui.heading("System");
+                ui.checkbox(&mut self.autostart, "Start ClankShift when I log in");
+
+                ui.add_space(10.0);
+                ui.collapsing("Advanced", |ui| {
+                    ui.weak("Program paths. Leave empty to find them automatically.");
+                    for (name, p) in [
+                        ("codex", &mut self.cfg.codex),
+                        ("claude", &mut self.cfg.claude),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.add_sized([50.0, 20.0], egui::Label::new(name));
+                            ui.text_edit_singleline(&mut p.command);
+                        });
                     }
+                });
+
+                ui.add_space(12.0);
+                if let Some(e) = &self.error {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
                 }
-                if ui.button("Cancel").clicked() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        match self.save() {
+                            Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
             });
         });
     }

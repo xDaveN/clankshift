@@ -1,5 +1,7 @@
 //! The resident tray process. Sleeps in the OS event loop until a menu click, a finished provider
 //! operation, or the next scheduled moment — no polling, no provider processes while idle.
+//!
+//! User-facing wording says "start a window"; internally that operation is called "anchor".
 
 use std::time::{Duration, Instant};
 
@@ -13,9 +15,10 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use crate::config::Config;
-use crate::providers::{Observation, Outcome, Provider, now};
+use crate::providers::{Outcome, Provider, now};
 use crate::schedule::{DAILY_GRACE_SECS, known_active, next_daily};
-use crate::state::{State, log};
+use crate::state::{State, data_dir, log};
+use crate::{icon, platform};
 
 /// Longest single sleep. OS wait timers pause during system sleep, so re-check the wall clock
 /// at least this often; each wake-up is a few microseconds of work.
@@ -23,15 +26,16 @@ const MAX_SLEEP: Duration = Duration::from_secs(10 * 60);
 
 pub enum UserEvent {
     Menu(MenuEvent),
-    Done(Provider, Result<(Outcome, Observation), String>),
+    Done(Provider, Result<(Outcome, Option<i64>), String>),
     SettingsClosed,
 }
 
 struct Items {
     status: [MenuItem; 2],
-    anchor: [MenuItem; 2],
+    start: [MenuItem; 2],
     auto: CheckMenuItem,
     settings: MenuItem,
+    logs: MenuItem,
     quit: MenuItem,
 }
 
@@ -79,7 +83,7 @@ impl App {
         match Config::load() {
             Ok(c) => (self.config, self.config_error) = (c, None),
             Err(e) => {
-                // Unreadable config: stay conservative, no automatic anchoring.
+                // Unreadable config: stay conservative, nothing automatic.
                 log(&e);
                 self.config = Config {
                     auto_anchor: false,
@@ -94,11 +98,11 @@ impl App {
     fn build_tray(&mut self) -> Result<(), String> {
         let items = Items {
             status: Provider::ALL.map(|_| MenuItem::new("", false, None)),
-            anchor: Provider::ALL
-                .map(|p| MenuItem::new(format!("Anchor {} now", p.name()), true, None)),
-            auto: CheckMenuItem::new("Automatic anchoring", true, self.config.auto_anchor, None),
+            start: Provider::ALL.map(|_| MenuItem::new("", true, None)),
+            auto: CheckMenuItem::new("", true, self.config.auto_anchor, None),
             settings: MenuItem::new("Settings…", true, None),
-            quit: MenuItem::new("Quit", true, None),
+            logs: MenuItem::new("Open log folder", true, None),
+            quit: MenuItem::new("Quit ClankShift", true, None),
         };
         let sep = PredefinedMenuItem::separator;
         let menu = Menu::new();
@@ -107,11 +111,12 @@ impl App {
             &items.status[0],
             &items.status[1],
             &sep(),
-            &items.anchor[0],
-            &items.anchor[1],
+            &items.start[0],
+            &items.start[1],
             &sep(),
             &items.auto,
             &items.settings,
+            &items.logs,
             &sep(),
             &items.quit,
         ])
@@ -120,14 +125,14 @@ impl App {
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(true)
             .with_tooltip("ClankShift")
-            .with_icon(icon())
+            .with_icon(Icon::from_rgba(icon::rgba(32), 32, 32).map_err(|e| e.to_string())?)
             .build()
             .map_err(|e| e.to_string())?;
         self.tray = Some((tray, items));
         Ok(())
     }
 
-    /// Start an anchor unless one is running or the provider already reported an active window.
+    /// Start a window unless a call is running or the provider already reported an active window.
     fn anchor(&mut self, p: Provider) {
         let i = idx(p);
         if self.busy[i] || known_active(p.state(&self.state).resets_at, now()) {
@@ -177,22 +182,24 @@ impl App {
         }
     }
 
-    fn finish(&mut self, p: Provider, result: Result<(Outcome, Observation), String>) {
+    fn finish(&mut self, p: Provider, result: Result<(Outcome, Option<i64>), String>) {
         self.busy[idx(p)] = false;
         let st = p.state_mut(&mut self.state);
         match result {
-            Ok((outcome, obs)) => {
+            Ok((outcome, resets_at)) => {
                 let what = match outcome {
-                    Outcome::Anchored => "anchored a new window",
-                    Outcome::AlreadyActive => "window already active",
+                    Outcome::Anchored => "started a new window",
+                    Outcome::AlreadyActive => "window was already running",
                 };
                 log(&format!(
                     "{}: {what}, resets {}",
                     p.name(),
-                    obs.resets_at.map_or("unknown".into(), |r| r.to_string())
+                    resets_at.map_or("unknown".into(), |r| r.to_string())
                 ));
-                (st.resets_at, st.used_percent, st.checked_at, st.last_error) =
-                    (obs.resets_at, obs.used_percent, Some(now()), None);
+                st.resets_at = resets_at;
+                st.started_by_us = outcome == Outcome::Anchored;
+                st.checked_at = Some(now());
+                st.last_error = None;
             }
             Err(e) => {
                 log(&format!("{}: error: {e}", p.name()));
@@ -221,52 +228,61 @@ impl App {
         }
     }
 
+    /// One line per provider, containing only what the provider actually reported.
+    fn status(&self, p: Provider, now: i64) -> String {
+        let st = p.state(&self.state);
+        let text = if !p.config(&self.config).enabled {
+            "turned off".to_string()
+        } else if self.busy[idx(p)] {
+            "checking…".to_string()
+        } else if let Some(e) = &st.last_error {
+            format!("problem: {}", truncate(e, 60))
+        } else {
+            match st.resets_at {
+                Some(r) if r > now && st.started_by_us => {
+                    format!("resets at {} (started by ClankShift)", fmt_time(r, now))
+                }
+                Some(r) if r > now => format!("resets at {}", fmt_time(r, now)),
+                Some(r) => format!("last known window ended {}", fmt_time(r, now)),
+                None => "not checked yet".to_string(),
+            }
+        };
+        format!("{}: {text}", p.name())
+    }
+
     fn refresh_menu(&self) {
         let Some((tray, items)) = &self.tray else {
             return;
         };
         let now = now();
+        let mut tooltip = String::from("ClankShift");
         for p in Provider::ALL {
             let i = idx(p);
-            let st = p.state(&self.state);
-            let enabled = p.config(&self.config).enabled;
-            let active = known_active(st.resets_at, now);
-            let status = if !enabled {
-                "disabled".to_string()
-            } else if self.busy[i] {
-                "checking…".to_string()
-            } else if let Some(e) = &st.last_error {
-                format!("error: {}", truncate(e, 70))
-            } else if active {
-                let used = st
-                    .used_percent
-                    .map(|u| format!(" ({u:.0}% used)"))
-                    .unwrap_or_default();
-                format!("resets {}{used}", fmt_time(st.resets_at.unwrap(), now))
-            } else {
-                "no known active window".to_string()
-            };
-            items.status[i].set_text(format!("{}: {status}", p.name()));
-            items.anchor[i].set_enabled(enabled && !self.busy[i] && !active);
-            let suffix = if active { " (window active)" } else { "" };
-            items.anchor[i].set_text(format!("Anchor {} now{suffix}", p.name()));
+            let status = self.status(p, now);
+            items.status[i].set_text(&status);
+            if p.config(&self.config).enabled {
+                tooltip.push('\n');
+                tooltip.push_str(&status);
+            }
+            let active = known_active(p.state(&self.state).resets_at, now);
+            items.start[i].set_enabled(p.config(&self.config).enabled && !self.busy[i] && !active);
+            let suffix = if active { " (already running)" } else { "" };
+            items.start[i].set_text(format!("Start {} window now{suffix}", p.name()));
         }
         items.auto.set_checked(self.config.auto_anchor);
-        let auto = match (&self.config_error, self.next_daily()) {
-            (Some(_), _) => "Automatic anchoring (config.toml error)".to_string(),
-            (None, Some(t)) => format!(
-                "Automatic anchoring (next {})",
-                fmt_time(t.as_second(), now)
-            ),
-            (None, None) => "Automatic anchoring".to_string(),
-        };
-        items.auto.set_text(auto);
+        items
+            .auto
+            .set_text(match (&self.config_error, self.next_daily()) {
+                (Some(_), _) => "Start windows automatically (settings file error)".to_string(),
+                (None, Some(t)) => format!(
+                    "Start windows automatically (next {})",
+                    fmt_time(t.as_second(), now)
+                ),
+                (None, None) => "Start windows automatically".to_string(),
+            });
         items.settings.set_enabled(!self.settings_open);
-        let _ = tray.set_tooltip(Some(if self.busy.contains(&true) {
-            "ClankShift – working…"
-        } else {
-            "ClankShift"
-        }));
+        // Windows truncates tray tooltips at 127 characters.
+        let _ = tray.set_tooltip(Some(truncate_chars(&tooltip, 127)));
     }
 
     /// Earliest moment something can change: the daily trigger, or a known window ending.
@@ -321,6 +337,9 @@ impl ApplicationHandler<UserEvent> for App {
                     event_loop.exit();
                 } else if id == items.settings.id() {
                     self.open_settings();
+                } else if id == items.logs.id() {
+                    let _ = std::fs::create_dir_all(data_dir());
+                    platform::open_folder(&data_dir());
                 } else if id == items.auto.id() {
                     self.config.auto_anchor = !self.config.auto_anchor;
                     // Never overwrite a config file we failed to read.
@@ -332,9 +351,9 @@ impl ApplicationHandler<UserEvent> for App {
                     self.rules_since = now();
                 } else if let Some(p) = Provider::ALL
                     .into_iter()
-                    .find(|&p| id == items.anchor[idx(p)].id())
+                    .find(|&p| id == items.start[idx(p)].id())
                 {
-                    log(&format!("{}: manual anchor", p.name()));
+                    log(&format!("{}: manual start", p.name()));
                     self.anchor(p);
                 }
             }
@@ -364,33 +383,14 @@ fn fmt_time(epoch: i64, now: i64) -> String {
     }
 }
 
+/// First line of `s`, shortened to `max` characters with an ellipsis.
 fn truncate(s: &str, max: usize) -> String {
-    let line = s.lines().next().unwrap_or("");
-    match line.char_indices().nth(max) {
-        Some((i, _)) => format!("{}…", &line[..i]),
-        None => line.to_string(),
-    }
+    truncate_chars(s.lines().next().unwrap_or(""), max)
 }
 
-/// 32×32 amber disc with a dark clock hand, drawn in code so there is no asset to ship.
-fn icon() -> Icon {
-    const N: usize = 32;
-    let mut rgba = vec![0u8; N * N * 4];
-    let c = (N as f32 - 1.0) / 2.0;
-    for y in 0..N {
-        for x in 0..N {
-            let (dx, dy) = (x as f32 - c, y as f32 - c);
-            let alpha = (c + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
-            let hand = (dx.abs() < 1.6 && dy < 0.5 && dy > -10.0)
-                || (dy.abs() < 1.6 && dx > -0.5 && dx < 7.0);
-            let px = if hand { [40, 30, 20] } else { [240, 160, 40] };
-            rgba[(y * N + x) * 4..][..4].copy_from_slice(&[
-                px[0],
-                px[1],
-                px[2],
-                (alpha * 255.0) as u8,
-            ]);
-        }
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max.saturating_sub(1)) {
+        Some((i, _)) if s.chars().count() > max => format!("{}…", &s[..i]),
+        _ => s.to_string(),
     }
-    Icon::from_rgba(rgba, N as u32, N as u32).expect("valid icon")
 }

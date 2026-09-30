@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Observation, Outcome, Session, now, resolve};
+use super::{Outcome, Session, now, resolve};
 use crate::config::ProviderConfig;
 use crate::schedule::started_now;
 
@@ -18,7 +18,7 @@ use crate::schedule::started_now;
 /// releases. `claude.model` in config.toml overrides it.
 const DEFAULT_MODEL: &str = "haiku";
 
-pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Observation), String> {
+pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     let program = resolve(&cfg.command, "claude")?;
     let model = if cfg.model.trim().is_empty() {
         DEFAULT_MODEL
@@ -50,16 +50,17 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Observation), String> {
     while let Some(line) = s.next_line()? {
         lines.push(line);
     }
-    let obs = parse_stream(&lines).map_err(|e| if e.is_empty() { s.stderr_tail() } else { e })?;
-    let outcome = match obs.resets_at {
+    let resets_at =
+        parse_stream(&lines).map_err(|e| if e.is_empty() { s.stderr_tail() } else { e })?;
+    let outcome = match resets_at {
         Some(r) if started_now(r, started) => Outcome::Anchored,
         _ => Outcome::AlreadyActive,
     };
-    Ok((outcome, obs))
+    Ok((outcome, resets_at))
 }
 
-/// Extract the 5-hour window from stream-json output. Empty error = no usable output at all.
-fn parse_stream(lines: &[String]) -> Result<Observation, String> {
+/// Extract the 5-hour window reset time from stream-json output. Empty error = no usable output at all.
+fn parse_stream(lines: &[String]) -> Result<Option<i64>, String> {
     let events: Vec<Value> = lines
         .iter()
         .filter_map(|l| serde_json::from_str(l).ok())
@@ -76,16 +77,10 @@ fn parse_stream(lines: &[String]) -> Result<Observation, String> {
         let info = &e["rate_limit_info"];
         let five = &info["unifiedWindows"]["five_hour"];
         if five.is_object() {
-            return Ok(Observation {
-                resets_at: five["resetsAt"].as_i64(),
-                used_percent: five["utilization"].as_f64().map(|u| u * 100.0),
-            });
+            return Ok(five["resetsAt"].as_i64());
         }
         if info["rateLimitType"] == "five_hour" {
-            return Ok(Observation {
-                resets_at: info["resetsAt"].as_i64(),
-                used_percent: None,
-            });
+            return Ok(info["resetsAt"].as_i64());
         }
     }
     match result {
@@ -110,9 +105,7 @@ mod tests {
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1790793600,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.11,"resetsAt":1790793600},"seven_day":{"utilization":0.08,"resetsAt":1791010800}}}}"#,
             r#"{"type":"result","subtype":"success","is_error":false,"result":"OK"}"#,
         ]);
-        let obs = parse_stream(&out).unwrap();
-        assert_eq!(obs.resets_at, Some(1790793600));
-        assert!((obs.used_percent.unwrap() - 11.0).abs() < 1e-9);
+        assert_eq!(parse_stream(&out).unwrap(), Some(1790793600));
     }
 
     #[test]
@@ -120,7 +113,7 @@ mod tests {
         let out = lines(&[
             r#"{"type":"rate_limit_event","rate_limit_info":{"resetsAt":42,"rateLimitType":"five_hour"}}"#,
         ]);
-        assert_eq!(parse_stream(&out).unwrap().resets_at, Some(42));
+        assert_eq!(parse_stream(&out).unwrap(), Some(42));
     }
 
     #[test]

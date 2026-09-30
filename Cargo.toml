@@ -33,3 +33,6 @@ windows-sys = { version = "0.61.2", features = [
 lto = true
 codegen-units = 1
 strip = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.31"
