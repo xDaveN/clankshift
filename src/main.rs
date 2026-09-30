@@ -1,5 +1,5 @@
 // No console window for the tray or settings process.
-#![windows_subsystem = "windows"]
+#![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod config;
 mod platform;
