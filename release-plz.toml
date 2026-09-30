@@ -4,3 +4,5 @@ git_only = true
 # semver-checks is for library APIs; ClankShift is an application.
 semver_check = false
 git_release_enable = true
+# Only release when the release PR is merged, never directly on other pushes.
+release_always = false
