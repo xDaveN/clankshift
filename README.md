@@ -22,6 +22,9 @@ all ClankShift does: it starts the 5h limit at a time you pick, while you're sti
 
 ## Install
 
+Windows only for now. Linux and macOS aren't supported yet, but the code is kept portable so
+they can follow.
+
 You need Windows 10/11 and the [Codex CLI](https://github.com/openai/codex) and/or
 [Claude Code](https://github.com/anthropics/claude-code), signed in with your subscription.
 
