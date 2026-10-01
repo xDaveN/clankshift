@@ -8,7 +8,7 @@ use std::path::PathBuf;
 pub struct Config {
     /// Master switch for automatic triggers. Manual "Anchor now" always works.
     pub auto_anchor: bool,
-    /// Anchor when ClankShift starts (at login if "start at login" is on).
+    /// Anchor when ClankShift starts (at login if "Start with Windows" is on).
     pub anchor_on_start: bool,
     /// Local time of day for a daily anchor, "HH:MM". None = off.
     pub daily_at: Option<String>,
