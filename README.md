@@ -45,6 +45,7 @@ The executable is not code-signed yet, so Windows SmartScreen may warn on first 
 
 ## Use
 
+When ClankShift starts, a notification confirms it is running in the system tray.
 Everything is in the tray icon menu:
 
 - each provider's 5h limit: when it resets, or when the last known one ended (hover the icon for the same summary)
