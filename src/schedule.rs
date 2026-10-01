@@ -11,8 +11,18 @@ pub const WINDOW_SECS: i64 = 5 * 3600;
 /// Covers request latency and providers that round reset times.
 const STARTED_NOW_TOLERANCE_SECS: i64 = 10 * 60;
 
-/// A daily trigger missed by more than this (machine asleep/off) is skipped, not run late.
-pub const DAILY_GRACE_SECS: i64 = 3600;
+/// An automatic start more than this late (machine asleep/off, provider failing) is skipped, not
+/// run late: it would put the reset somewhere the user did not ask for.
+pub const GRACE_SECS: i64 = 3600;
+
+/// Pause between attempts after an automatic start fails.
+const RETRY_SECS: i64 = 10 * 60;
+
+/// When to retry an automatic start triggered at `triggered` that failed at `now`; `None` = give up.
+pub fn next_retry(triggered: i64, now: i64) -> Option<i64> {
+    let at = now + RETRY_SECS;
+    (at - triggered <= GRACE_SECS).then_some(at)
+}
 
 /// A window is known active only while the provider-reported reset time is in the future.
 pub fn known_active(resets_at: Option<i64>, now: i64) -> bool {
@@ -58,6 +68,17 @@ mod tests {
         assert!(started_now(now + WINDOW_SECS - 5 * 60, now));
         // Window that has been running for an hour.
         assert!(!started_now(now + WINDOW_SECS - 3600, now));
+    }
+
+    #[test]
+    fn retry_only_within_grace() {
+        let t = 1_000_000;
+        assert_eq!(next_retry(t, t), Some(t + RETRY_SECS));
+        assert_eq!(
+            next_retry(t, t + GRACE_SECS - RETRY_SECS),
+            Some(t + GRACE_SECS)
+        );
+        assert_eq!(next_retry(t, t + GRACE_SECS - RETRY_SECS + 1), None);
     }
 
     #[test]

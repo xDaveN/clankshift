@@ -68,6 +68,8 @@ Files:
   need updates when it does.
 - Each started 5h limit uses a very small amount of your quota.
 - A daily start missed by more than an hour (computer asleep or off) is skipped.
+- If an automatic start fails (e.g. Codex is broken or offline), ClankShift tries again every
+  10 minutes for up to an hour, then gives up until the next automatic start.
 - Claude may occasionally send a request when a 5h limit was already running (e.g. you used
   Claude elsewhere after ClankShift's last check). That costs a negligible amount and changes nothing.
 
