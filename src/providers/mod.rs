@@ -7,7 +7,7 @@ pub mod codex;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -118,14 +118,22 @@ impl From<SpawnError> for String {
     }
 }
 
+/// Stdout lines queued ahead of the reader; a noisier process then waits on its pipe.
+const QUEUED_LINES: usize = 64;
+/// Stdout bytes one operation may produce, its lines and everything a caller keeps of them
+/// included. Real replies are KBs (a Codex status read with models: 12 KB); more is an error.
+const STDOUT_LIMIT: u64 = 4 << 20;
+/// Stderr bytes kept: enough for `stderr_tail`, however much the process writes.
+const STDERR_KEPT: usize = 4096;
+
 /// A short-lived, hidden provider process read line by line with a hard deadline.
 /// Dropping it kills the process and anything it spawned.
 struct Session {
     child: Child,
     _guard: platform::ProcessGuard,
     stdin: Option<ChildStdin>,
-    lines: Receiver<String>,
-    stderr: Arc<Mutex<String>>,
+    lines: Receiver<Result<String, String>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
     deadline: Instant,
 }
 
@@ -162,21 +170,43 @@ impl Session {
             }
         })?;
 
-        let (tx, lines) = channel();
+        let (tx, lines) = sync_channel(QUEUED_LINES);
         let stdout = child.stdout.take().unwrap();
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if tx.send(line).is_err() {
+            // The byte limit applies while a line is read, so not even one line outgrows it.
+            let mut out = BufReader::new(stdout).take(STDOUT_LIMIT + 1);
+            loop {
+                let mut buf = Vec::new();
+                let line = match out.read_until(b'\n', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) if out.limit() == 0 => {
+                        Err(format!("output exceeded {} MiB", STDOUT_LIMIT >> 20))
+                    }
+                    Ok(_) => {
+                        // Line ends as `lines()` strips them: "\n" or "\r\n".
+                        if buf.pop_if(|b| *b == b'\n').is_some() {
+                            buf.pop_if(|b| *b == b'\r');
+                        }
+                        String::from_utf8(buf).map_err(|_| "output is not UTF-8".to_string())
+                    }
+                    Err(e) => Err(format!("output read failed: {e}")),
+                };
+                let failed = line.is_err();
+                if tx.send(line).is_err() || failed {
                     break;
                 }
             }
         });
-        let stderr = Arc::new(Mutex::new(String::new()));
+        let stderr = Arc::new(Mutex::new(Vec::new()));
         let (mut err_pipe, sink) = (child.stderr.take().unwrap(), stderr.clone());
         std::thread::spawn(move || {
-            let mut buf = String::new();
-            let _ = err_pipe.read_to_string(&mut buf);
-            *sink.lock().unwrap() = buf;
+            let mut chunk = [0; 4096];
+            while let Ok(n @ 1..) = err_pipe.read(&mut chunk) {
+                let mut kept = sink.lock().unwrap();
+                kept.extend_from_slice(&chunk[..n]);
+                let excess = kept.len().saturating_sub(STDERR_KEPT);
+                kept.drain(..excess);
+            }
         });
 
         Ok(Self {
@@ -200,11 +230,14 @@ impl Session {
         self.stdin = None;
     }
 
-    /// Next stdout line; None at end of output.
+    /// Next stdout line; None at end of output. Past the deadline even queued lines are refused.
     fn next_line(&mut self) -> Result<Option<String>, String> {
         let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("timed out".into());
+        }
         match self.lines.recv_timeout(left) {
-            Ok(l) => Ok(Some(l)),
+            Ok(l) => l.map(Some),
             Err(RecvTimeoutError::Disconnected) => Ok(None),
             Err(RecvTimeoutError::Timeout) => Err("timed out".into()),
         }
@@ -213,7 +246,7 @@ impl Session {
     /// Last bit of stderr, for error messages once output has ended.
     fn stderr_tail(&self) -> String {
         std::thread::sleep(Duration::from_millis(100)); // let the stderr reader finish
-        let s = self.stderr.lock().unwrap();
+        let s = String::from_utf8_lossy(&self.stderr.lock().unwrap()).into_owned();
         let s = s.trim();
         let start = s.char_indices().rev().nth(300).map_or(0, |(i, _)| i);
         s[start..].to_string()
@@ -245,5 +278,82 @@ mod tests {
         assert!(!e.launched);
         assert!(is_not_found(&e.message), "{}", e.message);
         assert!(!is_not_found("model not found"));
+    }
+
+    /// Not a real test: a provider stand-in that writes stdout and stderr nonstop.
+    #[test]
+    #[ignore]
+    fn fake_flood() {
+        std::thread::spawn(|| {
+            loop {
+                eprintln!("err {}", "x".repeat(100));
+            }
+        });
+        loop {
+            println!("out");
+        }
+    }
+
+    #[test]
+    fn deadline_holds_against_queued_output() {
+        let args = [
+            "providers::tests::fake_flood",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+        ];
+        let exe = std::env::current_exe().unwrap();
+        let mut s = Session::spawn(&exe, &args, Duration::from_millis(500)).unwrap();
+        assert!(matches!(s.next_line(), Ok(Some(_))));
+        std::thread::sleep(Duration::from_millis(700)); // output keeps queuing meanwhile
+        assert_eq!(s.next_line(), Err("timed out".into()));
+        assert!(s.stderr.lock().unwrap().len() <= STDERR_KEPT);
+        assert!(s.stderr_tail().contains("err xxx"));
+    }
+    /// Not a real test: writes more stdout than `STDOUT_LIMIT`, as one unterminated line
+    /// ("long") or as ordinary lines, then waits.
+    #[test]
+    #[ignore]
+    fn fake_output() {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let line = if std::env::args().any(|a| a == "long") {
+            "x"
+        } else {
+            "x\n"
+        };
+        let block = line.repeat(1 << 10);
+        for _ in 0..(STDOUT_LIMIT >> 10) + 64 {
+            if out.write_all(block.as_bytes()).is_err() {
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[test]
+    fn stdout_over_budget_is_an_error() {
+        let exe = std::env::current_exe().unwrap();
+        for mode in ["long", "lines"] {
+            let args = [
+                "providers::tests::fake_output",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                mode,
+            ];
+            let mut s = Session::spawn(&exe, &args, Duration::from_secs(20)).unwrap();
+            let (mut lines, mut bytes) = (0, 0);
+            let end = loop {
+                match s.next_line() {
+                    Ok(Some(l)) => (lines, bytes) = (lines + 1, bytes + l.len() as u64 + 1),
+                    end => break end,
+                }
+            };
+            // An error at the budget: not the deadline, not a clean end, nothing truncated.
+            assert_eq!(end, Err("output exceeded 4 MiB".into()), "{mode}");
+            assert!(bytes <= STDOUT_LIMIT, "{mode}: {bytes}");
+            assert!(mode == "long" || lines > 1 << 20, "{mode}: {lines}");
+        }
     }
 }
