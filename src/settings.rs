@@ -44,7 +44,7 @@ pub fn run() {
                 width: 64,
                 height: 64,
             })
-            .with_inner_size([480.0, 780.0])
+            .with_inner_size([480.0, 712.0])
             .with_resizable(false)
             .with_maximize_button(false),
         centered: true,
@@ -338,15 +338,9 @@ impl eframe::App for Settings {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("Settings");
-                    ui.add_space(4.0);
                     ui.label(
-                        RichText::new(
-                            "Codex and Claude each have a 5h limit that starts with your first \
-                             message. ClankShift sends a tiny message at the times you choose, so \
-                             your 5h limit starts earlier and resets sooner. It never does this \
-                             while a 5h limit is already running.",
-                        )
-                        .color(p.weak),
+                        RichText::new("Start your 5h limits early so they reset sooner.")
+                            .color(p.weak),
                     );
 
                     if let Some(e) = &self.load_error {
@@ -366,61 +360,45 @@ impl eframe::App for Settings {
 
                     section(ui, "Providers");
                     card(ui, |ui| {
-                        row(ui, "OpenAI Codex", "", |ui| {
-                            toggle(ui, &mut self.cfg.codex.enabled, "OpenAI Codex");
+                        row(ui, "Codex", "", |ui| {
+                            toggle(ui, &mut self.cfg.codex.enabled, "Codex");
                         });
                         divider(ui);
-                        row(ui, "Anthropic Claude", "", |ui| {
-                            toggle(ui, &mut self.cfg.claude.enabled, "Anthropic Claude");
+                        row(ui, "Claude", "", |ui| {
+                            toggle(ui, &mut self.cfg.claude.enabled, "Claude");
                         });
                     });
 
-                    section(ui, "Start 5h limits automatically");
+                    section(ui, "Automatic starts");
                     card(ui, |ui| {
-                        row(
-                            ui,
-                            "Automatic starts",
-                            "Master switch for the options below",
-                            |ui| {
-                                toggle(ui, &mut self.cfg.auto_anchor, "Automatic starts");
-                            },
-                        );
-                        ui.add_enabled_ui(self.cfg.auto_anchor, |ui| {
+                        let title = "Start 5h limits automatically";
+                        row(ui, title, "Never while one is already running", |ui| {
+                            toggle(ui, &mut self.cfg.auto_anchor, title);
+                        });
+                        if self.cfg.auto_anchor {
                             divider(ui);
-                            row(
-                                ui,
-                                "When ClankShift starts",
-                                "For example when you log in",
-                                |ui| {
-                                    toggle(
-                                        ui,
-                                        &mut self.cfg.anchor_on_start,
-                                        "When ClankShift starts",
-                                    );
-                                },
-                            );
+                            let title = "When ClankShift launches";
+                            row(ui, title, "", |ui| {
+                                toggle(ui, &mut self.cfg.anchor_on_start, title);
+                            });
                             divider(ui);
                             let desc = if self.daily_on {
-                                format!(
-                                    "Those 5h limits reset at {:02}:{:02}",
-                                    (self.hour + 5) % 24,
-                                    self.minute
-                                )
+                                format!("Resets at {:02}:{:02}", (self.hour + 5) % 24, self.minute)
                             } else {
-                                "Off".to_string()
+                                String::new()
                             };
                             row(ui, "Every day at", &desc, |ui| {
                                 toggle(ui, &mut self.daily_on, "Every day at");
                                 ui.add_space(8.0);
                                 ui.add_enabled_ui(self.daily_on, |ui| self.time_picker(ui));
                             });
-                        });
+                        }
                     });
 
-                    section(ui, "System");
+                    section(ui, "General");
                     card(ui, |ui| {
-                        row(ui, "Start ClankShift when I log in", "", |ui| {
-                            toggle(ui, &mut self.autostart, "Start ClankShift when I log in");
+                        row(ui, "Launch at login", "", |ui| {
+                            toggle(ui, &mut self.autostart, "Launch at login");
                         });
                     });
 
@@ -428,14 +406,7 @@ impl eframe::App for Settings {
                     card(ui, |ui| {
                         ui.add_space(4.0);
                         egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                            ui.label(
-                                RichText::new(
-                                    "Program paths. Leave empty to find them automatically.",
-                                )
-                                .small()
-                                .color(p.weak),
-                            );
-                            ui.add_space(4.0);
+                            ui.label(RichText::new("Program paths").small().color(p.weak));
                             for (name, pc) in [
                                 ("Codex", &mut self.cfg.codex),
                                 ("Claude", &mut self.cfg.claude),
@@ -444,7 +415,7 @@ impl eframe::App for Settings {
                                     ui.add_sized([56.0, 28.0], egui::Label::new(name));
                                     ui.add(
                                         egui::TextEdit::singleline(&mut pc.command)
-                                            .hint_text("Find automatically")
+                                            .hint_text("Auto-detect")
                                             .desired_width(f32::INFINITY)
                                             .margin(vec2(8.0, 6.0)),
                                     );
