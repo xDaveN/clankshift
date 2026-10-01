@@ -24,6 +24,12 @@ pub fn next_retry(triggered: i64, now: i64) -> Option<i64> {
     (at - triggered <= GRACE_SECS).then_some(at)
 }
 
+/// Retry origin for a daily start due at `due` and reached at `now`: the scheduled time, not `now`,
+/// so a late start does not get a fresh hour of retries. `None` = missed by more than the grace.
+pub fn daily_trigger(due: i64, now: i64) -> Option<i64> {
+    (now - due <= GRACE_SECS).then_some(due)
+}
+
 /// A window is known active only while the provider-reported reset time is in the future.
 pub fn known_active(resets_at: Option<i64>, now: i64) -> bool {
     resets_at.is_some_and(|r| r > now)
@@ -79,6 +85,18 @@ mod tests {
             Some(t + GRACE_SECS)
         );
         assert_eq!(next_retry(t, t + GRACE_SECS - RETRY_SECS + 1), None);
+    }
+
+    #[test]
+    fn late_daily_start_retries_until_scheduled_time_plus_grace() {
+        let due = 1_000_000;
+        // Reached 40 min late: retries are measured from `due`, so 65 min after it is too late.
+        let since = daily_trigger(due, due + 40 * 60).unwrap();
+        assert_eq!(since, due);
+        assert_eq!(next_retry(since, due + 40 * 60), Some(due + 50 * 60));
+        assert_eq!(next_retry(since, due + 55 * 60), None);
+        assert_eq!(daily_trigger(due, due + GRACE_SECS), Some(due));
+        assert_eq!(daily_trigger(due, due + GRACE_SECS + 1), None);
     }
 
     #[test]

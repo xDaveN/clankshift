@@ -16,7 +16,7 @@ use winit::window::WindowId;
 
 use crate::config::Config;
 use crate::providers::{Outcome, Provider, is_not_found, maybe_sent, now};
-use crate::schedule::{GRACE_SECS, known_active, next_daily, next_retry};
+use crate::schedule::{GRACE_SECS, daily_trigger, known_active, next_daily, next_retry};
 use crate::state::{ProviderState, State, data_dir, log};
 use crate::{icon, platform};
 
@@ -154,11 +154,12 @@ impl App {
         });
     }
 
-    fn anchor_enabled(&mut self, why: &str) {
+    /// `since` is when the trigger was due; retries stay within `GRACE_SECS` of it.
+    fn anchor_enabled(&mut self, why: &str, since: i64) {
         log(&format!("automatic trigger: {why}"));
         for p in Provider::ALL {
             if p.config(&self.config).enabled {
-                self.anchor(p, Some(now()));
+                self.anchor(p, Some(since));
             }
         }
     }
@@ -207,10 +208,9 @@ impl App {
         }
         self.state.last_daily_run = Some(now);
         self.state.save();
-        if now - due.as_second() <= GRACE_SECS {
-            self.anchor_enabled("daily time");
-        } else {
-            log("daily trigger missed (computer asleep or off); skipped");
+        match daily_trigger(due.as_second(), now) {
+            Some(since) => self.anchor_enabled("daily time", since),
+            None => log("daily trigger missed (computer asleep or off); skipped"),
         }
     }
 
@@ -363,7 +363,7 @@ impl ApplicationHandler<UserEvent> for App {
                     log("could not show the startup notification");
                 }
                 if self.config.auto_anchor && self.config.anchor_on_start {
-                    self.anchor_enabled("ClankShift started");
+                    self.anchor_enabled("ClankShift started", now());
                 }
                 self.refresh_menu();
             }
