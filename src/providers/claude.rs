@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use super::{MAYBE_SENT, Outcome, Session, now, resolve};
 use crate::config::ProviderConfig;
-use crate::schedule::started_now;
+use crate::schedule::{WINDOW_SECS, started_now};
 
 /// Alias for the current cheapest Claude model; Claude Code resolves it, so it survives model
 /// releases. `claude.model` in config.toml overrides it.
@@ -29,6 +29,13 @@ const DEFAULT_MODEL: &str = "haiku";
 /// request uses (user settings could relocate `CLAUDE_CONFIG_DIR` for one and not the other).
 /// A root-level flag: it must come before `auth`.
 const SETTING_SOURCES: [&str; 2] = ["--setting-sources", ""];
+
+/// Allowed difference between our clock and Claude's.
+const CLOCK_SKEW_SECS: i64 = 60;
+
+/// Claude reports resets on 10-minute steps, rounded down so far (a limit started 07:47:15 UTC
+/// reset 12:40, seen 2026-10-01); one step is allowed beyond a fresh 5h in case it rounds up.
+const ROUNDING_SECS: i64 = 10 * 60;
 
 pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     check_custom_headers()?;
@@ -67,25 +74,26 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
 
 /// The request's result. From launch on it may have reached Claude, so a failure is not retried.
 fn reply(s: &mut Session, started: i64) -> Result<(Outcome, Option<i64>), String> {
-    let resets_at = read_reply(s).map_err(|e| format!("{e} {MAYBE_SENT}"))?;
-    let outcome = match resets_at {
-        Some(r) if started_now(r, started) => Outcome::Anchored,
-        _ => Outcome::AlreadyActive,
+    let resets_at = read_reply(s, started).map_err(|e| format!("{e} {MAYBE_SENT}"))?;
+    let outcome = if started_now(resets_at, started) {
+        Outcome::Anchored
+    } else {
+        Outcome::AlreadyActive
     };
-    Ok((outcome, resets_at))
+    Ok((outcome, Some(resets_at)))
 }
 
-fn read_reply(s: &mut Session) -> Result<Option<i64>, String> {
+fn read_reply(s: &mut Session, started: i64) -> Result<i64, String> {
     let mut lines = Vec::new();
     loop {
         match s.next_line() {
             Ok(Some(line)) => lines.push(line),
             Ok(None) => break,
             // A reset Claude already reported survives the broken stream; nothing else does.
-            Err(e) => return parse_stream(&lines).ok().flatten().map(Some).ok_or(e),
+            Err(e) => return parse_stream(&lines, started, now()).map_err(|_| e),
         }
     }
-    parse_stream(&lines).map_err(|e| if e.is_empty() { s.stderr_tail() } else { e })
+    parse_stream(&lines, started, now()).map_err(|e| if e.is_empty() { s.stderr_tail() } else { e })
 }
 
 const HEADERS: &str = "ANTHROPIC_CUSTOM_HEADERS";
@@ -212,16 +220,18 @@ fn subscription_auth(status: &Value) -> Result<(), String> {
     ))
 }
 
-/// Extract the 5-hour window reset time from stream-json output. Empty error = no usable output at all.
-fn parse_stream(lines: &[String]) -> Result<Option<i64>, String> {
+/// Extract the 5-hour window reset time from stream-json output of a request sent at `started` and
+/// read by `observed`: the latest plausible one, as a later event can update an earlier one.
+/// Empty error = no usable output at all.
+fn parse_stream(lines: &[String], started: i64, observed: i64) -> Result<i64, String> {
     let events: Vec<Value> = lines
         .iter()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
-    let reset = events
+    let resets: Vec<&Value> = events
         .iter()
         .filter(|e| e["type"] == "rate_limit_event")
-        .find_map(|e| {
+        .filter_map(|e| {
             let info = &e["rate_limit_info"];
             let five = &info["unifiedWindows"]["five_hour"];
             if five.is_object() {
@@ -229,10 +239,21 @@ fn parse_stream(lines: &[String]) -> Result<Option<i64>, String> {
             } else {
                 (info["rateLimitType"] == "five_hour").then_some(&info["resetsAt"])
             }
-        });
-    // A usable reset is kept even if the request then failed: it is what Claude says.
-    if let Some(r) = reset.and_then(Value::as_i64) {
-        return Ok(Some(r));
+        })
+        .collect();
+    // A usable reset is kept even if the request then failed: it is what Claude says. A running
+    // limit resets after the request was sent; a new one at most 5h after the reply.
+    let plausible = |r: &i64| {
+        *r > started - CLOCK_SKEW_SECS
+            && *r <= observed + WINDOW_SECS + ROUNDING_SECS + CLOCK_SKEW_SECS
+    };
+    if let Some(r) = resets
+        .iter()
+        .rev()
+        .filter_map(|r| r.as_i64())
+        .find(plausible)
+    {
+        return Ok(r);
     }
     match events.iter().find(|e| e["type"] == "result") {
         Some(r) if r["is_error"] == true => Err(format!(
@@ -242,7 +263,10 @@ fn parse_stream(lines: &[String]) -> Result<Option<i64>, String> {
                 .or(r["api_error_status"].as_str())
                 .unwrap_or("request failed")
         )),
-        _ if reset.is_some() => Ok(None),
+        _ if !resets.is_empty() => Err(format!(
+            "Claude reported its 5h limit without a usable reset time ({})",
+            resets.last().unwrap()
+        )),
         Some(_) => Err("Claude answered but did not report its 5h limit".into()),
         None => Err(String::new()),
     }
@@ -487,6 +511,12 @@ mod tests {
         if arg("null-reset") {
             reset(Value::Null);
         }
+        if arg("ms-reset") {
+            reset(((now() + crate::schedule::WINDOW_SECS) * 1000).into());
+        }
+        if arg("ok") {
+            println!(r#"{{"type":"result","is_error":false,"result":"OK"}}"#);
+        }
         if arg("error") {
             println!(r#"{{"type":"result","is_error":true,"result":"request failed"}}"#);
         }
@@ -522,16 +552,24 @@ mod tests {
         );
         assert!(crate::schedule::known_active(st.resets_at, now()));
         assert_eq!((st.last_error, retry), (None, false));
-        // Control: a usable reset before an error result is kept too.
-        let (st, retry) = finish_fake(&["reset", "error"]);
-        assert!(st.resets_at.is_some() && st.last_error.is_none() && !retry);
+        // Control: a usable reset before an error result or an unusable reset is kept too.
+        for script in [&["reset", "error"][..], &["reset", "ms-reset", "hang"]] {
+            let (st, retry) = finish_fake(script);
+            let fresh = |r| started_now(r, now()) && r <= now() + WINDOW_SECS;
+            assert!(st.resets_at.is_some_and(fresh), "{script:?}: {st:?}");
+            assert!(st.last_error.is_none() && !retry, "{script:?}");
+        }
     }
 
     #[test]
     fn incomplete_reset_does_not_hide_a_failure() {
         for script in [
-            &["null-reset", "error"][..],
+            &["null-reset", "ok"][..],
+            &["null-reset"],
+            &["null-reset", "error"],
             &["null-reset", "hang"],
+            &["ms-reset", "ok"],
+            &["ms-reset", "error"],
             &["hang"],
         ] {
             let (st, retry) = finish_fake(script);
@@ -599,6 +637,13 @@ mod tests {
         }
     }
 
+    /// Request time for the parser fixtures: 3h before the captured reset 1790793600.
+    const SENT: i64 = 1790793600 - 3 * 3600;
+
+    fn parse(lines: &[String]) -> Result<i64, String> {
+        parse_stream(lines, SENT, SENT + 5)
+    }
+
     #[test]
     fn parses_real_rate_limit_event() {
         // Captured from Claude Code 2.1.285 (trimmed).
@@ -607,33 +652,80 @@ mod tests {
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1790793600,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.11,"resetsAt":1790793600},"seven_day":{"utilization":0.08,"resetsAt":1791010800}}}}"#,
             r#"{"type":"result","subtype":"success","is_error":false,"result":"OK"}"#,
         ]);
-        assert_eq!(parse_stream(&out).unwrap(), Some(1790793600));
+        assert_eq!(parse(&out).unwrap(), 1790793600);
     }
 
     #[test]
     fn falls_back_to_top_level_five_hour_fields() {
         let out = lines(&[
-            r#"{"type":"rate_limit_event","rate_limit_info":{"resetsAt":42,"rateLimitType":"five_hour"}}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"resetsAt":1790793600,"rateLimitType":"five_hour"}}"#,
         ]);
-        assert_eq!(parse_stream(&out).unwrap(), Some(42));
+        assert_eq!(parse(&out).unwrap(), 1790793600);
+    }
+
+    #[test]
+    fn keeps_the_latest_usable_reset() {
+        let event = |r: &str| {
+            format!(
+                r#"{{"type":"rate_limit_event","rate_limit_info":{{"resetsAt":{r},"rateLimitType":"five_hour"}}}}"#
+            )
+        };
+        let ok = r#"{"type":"result","is_error":false,"result":"OK"}"#.to_string();
+        let run = |events: &[String]| {
+            let mut out: Vec<String> = events.iter().map(|r| event(r)).collect();
+            out.push(ok.clone());
+            parse(&out)
+        };
+        let window = WINDOW_SECS;
+        let (early, late) = (SENT + 3600, SENT + 2 * 3600);
+        // Limits: just before the request, a fresh 5h rounded up (both with clock skew).
+        let (lowest, highest) = (
+            SENT - CLOCK_SKEW_SECS + 1,
+            SENT + 5 + window + ROUNDING_SECS + CLOCK_SKEW_SECS,
+        );
+        for r in [early, lowest, highest] {
+            assert_eq!(run(&[r.to_string()]).unwrap(), r);
+        }
+        assert_eq!(run(&[early.to_string(), late.to_string()]).unwrap(), late);
+        let invalid = [
+            "null".to_string(),
+            r#""1790793600""#.into(),
+            "0".into(),
+            "-1".into(),
+            (SENT - CLOCK_SKEW_SECS).to_string(), // past
+            (highest + 1).to_string(),            // beyond 5h
+            ((SENT + window) * 1000).to_string(), // milliseconds
+            i64::MAX.to_string(),
+        ];
+        for bad in invalid {
+            let e = run(std::slice::from_ref(&bad)).unwrap_err();
+            assert!(e.contains("without a usable reset time"), "{bad}: {e}");
+            assert_eq!(
+                run(&[early.to_string(), bad.clone()]).unwrap(),
+                early,
+                "{bad}"
+            );
+        }
     }
 
     #[test]
     fn reports_errors() {
         let out = lines(&[r#"{"type":"result","is_error":true,"result":"Not logged in"}"#]);
-        assert_eq!(parse_stream(&out).unwrap_err(), "Claude: Not logged in");
-        assert_eq!(parse_stream(&lines(&["garbage"])).unwrap_err(), "");
+        assert_eq!(parse(&out).unwrap_err(), "Claude: Not logged in");
+        assert_eq!(parse(&lines(&["garbage"])).unwrap_err(), "");
         // A reported reset survives a failed request (e.g. rejected while the limit runs).
         let limited = lines(&[
-            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":42,"rateLimitType":"five_hour"}}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790793600,"rateLimitType":"five_hour"}}"#,
             r#"{"type":"result","is_error":true,"result":"limit reached"}"#,
         ]);
-        assert_eq!(parse_stream(&limited).unwrap(), Some(42));
+        assert_eq!(parse(&limited).unwrap(), 1790793600);
+        // An unusable reset does not hide the failure.
+        let limited = lines(&[
+            r#"{"type":"rate_limit_event","rate_limit_info":{"resetsAt":0,"rateLimitType":"five_hour"}}"#,
+            r#"{"type":"result","is_error":true,"result":"limit reached"}"#,
+        ]);
+        assert_eq!(parse(&limited).unwrap_err(), "Claude: limit reached");
         let no_event = lines(&[r#"{"type":"result","is_error":false,"result":"OK"}"#]);
-        assert!(
-            parse_stream(&no_event)
-                .unwrap_err()
-                .contains("did not report")
-        );
+        assert!(parse(&no_event).unwrap_err().contains("did not report"));
     }
 }
