@@ -71,6 +71,9 @@ jobs:
         with:
           ref: ${{ needs.release.outputs.tag }}
       - run: cargo build --release --locked
+      # .cargo/config.toml links the C runtime statically; fail rather than ship an exe needing it.
+      - name: Check no VC++ runtime dependency
+        run: if (Select-String -Path target/release/clankshift.exe -Pattern vcruntime -SimpleMatch -Quiet) { throw 'clankshift.exe imports the VC++ runtime' }
       # Same file name every release, so updating keeps the Start with Windows entry valid.
       - name: Upload
         env:
