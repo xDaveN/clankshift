@@ -15,9 +15,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use crate::config::Config;
-use crate::providers::{Outcome, Provider, is_not_found, now};
+use crate::providers::{Outcome, Provider, is_not_found, maybe_sent, now};
 use crate::schedule::{GRACE_SECS, known_active, next_daily, next_retry};
-use crate::state::{State, data_dir, log};
+use crate::state::{ProviderState, State, data_dir, log};
 use crate::{icon, platform};
 
 /// Longest single sleep. OS wait timers pause during system sleep, so re-check the wall clock
@@ -218,9 +218,7 @@ impl App {
         let i = idx(p);
         self.busy[i] = false;
         let auto_since = self.auto_since[i].take();
-        let failed = result.is_err();
-        let st = p.state_mut(&mut self.state);
-        match result {
+        match &result {
             Ok((outcome, resets_at)) => {
                 let what = match outcome {
                     Outcome::Anchored => "started a new 5h limit",
@@ -231,16 +229,11 @@ impl App {
                     p.name(),
                     resets_at.map_or("unknown".into(), |r| r.to_string())
                 ));
-                st.resets_at = resets_at;
-                st.checked_at = Some(now());
-                st.last_error = None;
             }
-            Err(e) => {
-                log(&format!("{}: error: {e}", p.name()));
-                st.last_error = Some(e);
-            }
+            Err(e) => log(&format!("{}: error: {e}", p.name())),
         }
-        if let Some(since) = auto_since.filter(|_| failed) {
+        let retryable = apply(p.state_mut(&mut self.state), result, now());
+        if let Some(since) = auto_since.filter(|_| retryable) {
             let now = now();
             self.retry[i] = next_retry(since, now).map(|at| (since, at));
             match self.retry[i] {
@@ -428,6 +421,28 @@ impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, _: &ActiveEventLoop) {}
 
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+}
+
+/// Record a finished start in the provider's state. True if it failed before anything could
+/// reach the provider, so an automatic start may be retried.
+pub(crate) fn apply(
+    st: &mut ProviderState,
+    result: Result<(Outcome, Option<i64>), String>,
+    now: i64,
+) -> bool {
+    match result {
+        Ok((_, resets_at)) => {
+            st.resets_at = resets_at;
+            st.checked_at = Some(now);
+            st.last_error = None;
+            false
+        }
+        Err(e) => {
+            let retryable = !maybe_sent(&e);
+            st.last_error = Some(e);
+            retryable
+        }
+    }
 }
 
 fn fmt_time(epoch: i64, now: i64) -> String {
