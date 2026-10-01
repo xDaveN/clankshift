@@ -1,0 +1,22 @@
+Third-party licenses for ClankShift
+
+ClankShift includes the Rust crates listed below. Its settings window embeds these fonts
+(via egui's epaint_default_fonts crate):
+
+  Ubuntu Light     Copyright 2011 Canonical Ltd. (Ubuntu Font Licence 1.0)
+  Noto Emoji       Copyright 2013 Google Inc. (SIL Open Font License 1.1)
+  Hack             Copyright 2018 Source Foundry Authors (MIT); Bitstream Vera Sans Mono
+                   Copyright 2003 Bitstream, Inc. (Bitstream Vera License)
+  emoji-icon-font  Copyright 2014 John Slegers (MIT)
+{{#each licenses}}
+
+================================================================================
+{{{name}}}
+
+Used by:
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{{text}}}
+{{/each}}

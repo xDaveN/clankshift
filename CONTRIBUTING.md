@@ -27,7 +27,11 @@ Contributions are dual licensed under MIT and Apache-2.0, like the rest of the p
 ## Releasing
 
 [release-plz](https://release-plz.dev) keeps a release PR open on `main`. Merging it tags the
-version, creates the GitHub Release and attaches `clankshift.exe`.
+version, creates the GitHub Release and attaches `clankshift.exe` plus its license notices, written
+by `scripts/license-notices.sh`: `THIRD-PARTY-LICENSES.txt` (crates and fonts, via
+[cargo-about](https://github.com/EmbarkStudios/cargo-about) and `about.toml`) and `RUST-LICENSES.html`
+(Rust standard library, from the building toolchain). CI runs the same script, so a missing notice
+fails the PR.
 
 That PR is opened by a bot, so its CI waits for approval: *Checks* tab → *Approve workflows to run*,
 then merge once green. (A `RELEASE_PLZ_TOKEN` secret with a fine-grained PAT, *Contents* and

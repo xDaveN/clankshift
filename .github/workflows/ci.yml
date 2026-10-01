@@ -46,3 +46,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
+      # Releases ship these notices; the script fails if any of them is missing.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: License notices
+        run: bash scripts/license-notices.sh target/notices
