@@ -67,7 +67,7 @@ Settings are in `%APPDATA%\ClankShift\config.toml`; state and log in `%LOCALAPPD
 - A daily start missed by more than an hour (PC asleep or off) is skipped.
 - A failed automatic start is retried every 10 minutes for up to an hour.
 - Claude may occasionally get a request while a 5h limit is already running (if you used it
-  elsewhere in the meantime). Costs next to nothing, changes nothing.
+  elsewhere in the meantime). Costs next to nothing.
 
 ## Building
 
