@@ -24,6 +24,15 @@ pub fn set_autostart(_on: bool) -> Result<(), String> {
     Err("Start at login is not supported on this platform yet".into())
 }
 
+pub struct Accent {
+    pub light: [u8; 3],
+    pub dark: [u8; 3],
+}
+
+pub fn accent() -> Option<Accent> {
+    None
+}
+
 pub fn notify(_tray: &tray_icon::TrayIcon, _text: &str) -> bool {
     true
 }
