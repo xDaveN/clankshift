@@ -4,7 +4,7 @@
 //! Look: Windows 11 "Fluent" settings. Follows the system light/dark theme, white cards on a
 //! grey background, toggle switches and the Windows accent blue.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use eframe::egui::{self, Align, Color32, FontFamily, FontId, Layout, RichText, Stroke, vec2};
 
@@ -90,8 +90,8 @@ impl Palette {
                 stroke: Color32::from_rgb(0x3a, 0x3a, 0x3a),
                 text: Color32::from_rgb(0xff, 0xff, 0xff),
                 weak: Color32::from_rgb(0xc5, 0xc5, 0xc5),
-                accent: Color32::from_rgb(0x60, 0xcd, 0xff),
-                on_accent: Color32::BLACK,
+                accent: accent(true),
+                on_accent: on(accent(true)),
             }
         } else {
             Self {
@@ -101,14 +101,36 @@ impl Palette {
                 stroke: Color32::from_rgb(0xe5, 0xe5, 0xe5),
                 text: Color32::from_rgb(0x1b, 0x1b, 0x1b),
                 weak: Color32::from_rgb(0x5f, 0x5f, 0x5f),
-                accent: Color32::from_rgb(0x00, 0x5f, 0xb8),
-                on_accent: Color32::WHITE,
+                accent: accent(false),
+                on_accent: on(accent(false)),
             }
         }
     }
 
     fn of(ui: &egui::Ui) -> Self {
         Self::new(ui.visuals().dark_mode)
+    }
+}
+
+/// The Windows accent color (read once), else the Windows 11 default blue.
+fn accent(dark: bool) -> Color32 {
+    static SYSTEM: OnceLock<Option<platform::Accent>> = OnceLock::new();
+    let [r, g, b] = match SYSTEM.get_or_init(platform::accent) {
+        Some(a) if dark => a.dark,
+        Some(a) => a.light,
+        None if dark => [0x60, 0xcd, 0xff],
+        None => [0x00, 0x5f, 0xb8],
+    };
+    Color32::from_rgb(r, g, b)
+}
+
+/// Black or white, whichever reads better on `bg`.
+fn on(bg: Color32) -> Color32 {
+    let luma = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
+    if luma > 150.0 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
     }
 }
 

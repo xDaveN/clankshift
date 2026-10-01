@@ -15,7 +15,8 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Registry::{
-    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
+    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_BINARY, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW,
+    RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CreateMutexW};
 use windows_sys::Win32::UI::Shell::{
@@ -122,6 +123,39 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
     } else {
         Err(format!("registry error {err}"))
     }
+}
+
+pub struct Accent {
+    /// Accent shade for light mode, as RGB.
+    pub light: [u8; 3],
+    /// Accent shade for dark mode, as RGB.
+    pub dark: [u8; 3],
+}
+
+/// The user's accent color, picked the way Windows 11 does it for buttons and toggles.
+pub fn accent() -> Option<Accent> {
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent");
+    let value = wide("AccentPalette");
+    let mut buf = [0u8; 32];
+    let mut len = buf.len() as u32;
+    let err = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_BINARY,
+            null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+        )
+    };
+    // 8 RGBA entries, lightest first: Light3, Light2, Light1, Accent, Dark1, Dark2, Dark3, unused.
+    // Windows 11 uses Dark1 in light mode and Light2 in dark mode.
+    let rgb = |i: usize| [buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2]];
+    (err == 0 && len == 32).then(|| Accent {
+        light: rgb(4),
+        dark: rgb(1),
+    })
 }
 
 /// Shows a Windows notification from the tray icon. Silent, and held back during Do Not Disturb.
