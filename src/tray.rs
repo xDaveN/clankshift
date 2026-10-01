@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use jiff::Timestamp;
+use jiff::civil::Time;
 use jiff::tz::TimeZone;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -16,7 +17,9 @@ use winit::window::WindowId;
 
 use crate::config::Config;
 use crate::providers::{Outcome, Provider, is_not_found, maybe_sent, now};
-use crate::schedule::{GRACE_SECS, daily_trigger, known_active, next_daily, next_retry};
+use crate::schedule::{
+    GRACE_SECS, daily_trigger, known_active, latest_daily, next_daily, next_retry,
+};
 use crate::state::{ProviderState, State, data_dir, log};
 use crate::{icon, platform};
 
@@ -187,25 +190,30 @@ impl App {
         }
     }
 
-    fn next_daily(&self) -> Option<Timestamp> {
+    /// Daily time and the moment after which its occurrences count, if a daily start is on.
+    fn daily_rule(&self) -> Option<(Time, Timestamp)> {
         let t = self
             .config
             .daily_time()
             .filter(|_| self.config.auto_anchor)?;
         let base = self.state.last_daily_run.unwrap_or(0).max(self.rules_since);
-        Some(next_daily(
-            Timestamp::from_second(base).ok()?,
-            t,
-            &TimeZone::system(),
-        ))
+        Some((t, Timestamp::from_second(base).ok()?))
+    }
+
+    fn next_daily(&self) -> Option<Timestamp> {
+        let (t, base) = self.daily_rule()?;
+        Some(next_daily(base, t, &TimeZone::system()))
     }
 
     fn check_daily(&mut self) {
-        let Some(due) = self.next_daily() else { return };
-        let now = now();
-        if now < due.as_second() {
+        let Some((t, base)) = self.daily_rule() else {
             return;
-        }
+        };
+        let now = now();
+        let due = Timestamp::from_second(now)
+            .ok()
+            .and_then(|n| latest_daily(base, n, t, &TimeZone::system()));
+        let Some(due) = due else { return };
         self.state.last_daily_run = Some(now);
         self.state.save();
         match daily_trigger(due.as_second(), now) {

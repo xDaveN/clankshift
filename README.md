@@ -67,7 +67,8 @@ Settings are in `%APPDATA%\ClankShift\config.toml`; state and log in `%LOCALAPPD
 - None of this is a documented provider contract. If Codex or Claude change how limits work,
   ClankShift may need an update.
 - Each start costs a very small bit of quota.
-- A daily start missed by more than an hour (PC asleep or off) is skipped.
+- A daily start missed by more than an hour (PC asleep) is skipped. One that passes while
+  ClankShift is closed is not made up later; *Start on launch* covers that case.
 - A failed automatic start is retried every 10 minutes for up to an hour.
 - Claude may occasionally get a request while a 5h limit is already running (if you used it
   elsewhere in the meantime). Costs next to nothing.

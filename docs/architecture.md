@@ -76,7 +76,9 @@ Keep UI wording free of "window"/"anchor".
 - **Manual:** *Start … 5h limit* in the tray.
 - **Start:** when ClankShift starts. With *Start with Windows* (per-user `Run` registry key, no
   admin rights), this is the login trigger.
-- **Daily:** at a local time (DST-aware). If missed by more than an hour (asleep/off), it is skipped.
+- **Daily:** at a local time (DST-aware). After sleep, only the latest missed time counts, and only
+  within an hour; older ones are skipped. Times that passed while ClankShift was closed, or before a
+  settings change, are never made up: only *Start* runs at launch.
 
 All triggers do nothing for a provider whose window is known to be running.
 
