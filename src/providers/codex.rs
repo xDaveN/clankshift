@@ -27,21 +27,40 @@ const RECHECK_SECS: u64 = 10;
 const MAX_REPLY_MS: i64 = 2000;
 
 /// The 5-hour window as read: (resetsAt, usedPercent).
-type Limit = (Option<i64>, Option<i64>);
+type Limit = (i64, Option<i64>);
 
 /// One rate-limit read: the 5-hour window, and when the request was sent and answered (Unix ms).
 struct Snapshot {
-    resets_at: Option<i64>,
+    resets_at: i64,
     used: Option<i64>,
     sent_ms: i64,
     replied_ms: i64,
 }
 
 impl Snapshot {
-    /// `looks_inactive` for this read, its timing rounded outwards to whole seconds.
-    fn looks_inactive(&self, resets_at: i64) -> Result<bool, String> {
-        let (before, after) = (self.sent_ms / 1000, (self.replied_ms + 999) / 1000);
-        looks_inactive(resets_at, self.used, before, after)
+    /// A rate-limit reply sent and answered at these times (Unix ms). Every read, including the
+    /// one after a start, must report a reset Codex could really report, or it is not used.
+    fn new(limits: &Value, sent_ms: i64, replied_ms: i64) -> Result<Snapshot, String> {
+        let (resets_at, used) = parse_rate_limits(limits)?;
+        let snapshot = Snapshot {
+            resets_at,
+            used,
+            sent_ms,
+            replied_ms,
+        };
+        check_reset(resets_at, snapshot.seconds().1)?;
+        Ok(snapshot)
+    }
+
+    /// When the read was sent and answered, rounded outwards to whole seconds.
+    fn seconds(&self) -> (i64, i64) {
+        (self.sent_ms / 1000, (self.replied_ms + 999) / 1000)
+    }
+
+    /// `looks_inactive` for this read.
+    fn looks_inactive(&self) -> Result<bool, String> {
+        let (before, after) = self.seconds();
+        looks_inactive(self.resets_at, self.used, before, after)
     }
 }
 
@@ -54,10 +73,8 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     let program = resolve(&cfg.command, "codex")?;
     let pick = cfg.model.trim().is_empty();
     let (first, models) = read(&program, pick)?;
-    if let Some(r) = first.resets_at
-        && !first.looks_inactive(r)?
-    {
-        return Ok((Outcome::AlreadyActive, first.resets_at));
+    if !first.looks_inactive()? {
+        return Ok((Outcome::AlreadyActive, Some(first.resets_at)));
     }
     // Chosen before the confirming read: nothing slow may sit between it and the request.
     let model = if pick {
@@ -65,23 +82,15 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     } else {
         cfg.model.trim().to_string()
     };
-    if first.resets_at.is_some() {
-        // The placeholder, or a window started within the last minute or so: only the placeholder moves.
-        std::thread::sleep(Duration::from_secs(RECHECK_SECS));
-        let (second, _) = read(&program, false)?;
-        let r = second
-            .resets_at
-            .ok_or("Codex stopped reporting its 5h limit reset; nothing sent")?;
-        if !second.looks_inactive(r)? || !moved(&first, &second)? {
-            return Ok((Outcome::AlreadyActive, Some(r)));
-        }
+    // The placeholder, or a window started within the last minute or so: only the placeholder moves.
+    std::thread::sleep(Duration::from_secs(RECHECK_SECS));
+    let (second, _) = read(&program, false)?;
+    if !second.looks_inactive()? || !moved(&first, &second)? {
+        return Ok((Outcome::AlreadyActive, Some(second.resets_at)));
     }
     exec(&program, &model)?;
-    let (Snapshot { resets_at, .. }, _) = read(&program, false)?;
-    if resets_at.is_none() {
-        return Err("Codex did not report its 5h limit after the request".into());
-    }
-    Ok((Outcome::Anchored, resets_at))
+    let (after, _) = read(&program, false)?;
+    Ok((Outcome::Anchored, Some(after.resets_at)))
 }
 
 /// One short app-server session: rate limits, then the model list if `with_models` (else `Null`).
@@ -130,13 +139,7 @@ fn read_from(s: &mut Session, with_models: bool) -> Result<(Snapshot, Value), St
             _ => {}
         }
     }
-    let (resets_at, used) = parse_rate_limits(&limits.unwrap())?;
-    let snapshot = Snapshot {
-        resets_at,
-        used,
-        sent_ms,
-        replied_ms,
-    };
+    let snapshot = Snapshot::new(&limits.unwrap(), sent_ms, replied_ms)?;
     Ok((snapshot, models.unwrap()))
 }
 
@@ -180,35 +183,48 @@ fn exec(program: &std::path::PathBuf, model: &str) -> Result<(), String> {
     ))
 }
 
-/// Reset time and used percent of the 5-hour window: whichever slot has a short duration
-/// (weekly-only accounts have none). A `None` reset = the window exists but reports no reset time.
+/// Reset time and used percent of the 5-hour window: whichever slot lasts exactly 5 hours
+/// (weekly-only accounts have none). Even the "not running" placeholder has a reset time, so a
+/// missing or malformed one is a reply we don't understand: stop rather than send.
 fn parse_rate_limits(result: &Value) -> Result<Limit, String> {
     let rl = &result["rateLimits"];
-    ["primary", "secondary"]
+    let w = ["primary", "secondary"]
         .iter()
         .map(|slot| &rl[slot])
-        .find(|w| w["windowDurationMins"].as_i64().is_some_and(|m| m <= 360))
-        .map(|w| (w["resetsAt"].as_i64(), w["usedPercent"].as_i64()))
-        .ok_or_else(|| "Codex reports no 5h limit for this account".into())
+        .find(|w| w["windowDurationMins"].as_i64() == Some(WINDOW_SECS / 60))
+        .ok_or("Codex reports no 5h limit for this account")?;
+    let reset = w["resetsAt"].as_i64().ok_or_else(|| {
+        format!(
+            "Codex reported an unexpected 5h limit reset ({})",
+            w["resetsAt"]
+        )
+    })?;
+    Ok((reset, w["usedPercent"].as_i64()))
+}
+
+/// A reset already past or beyond 5h away (allowing for clock skew) after a read answered at
+/// `after` is not something Codex reports: stop.
+fn check_reset(resets_at: i64, after: i64) -> Result<(), String> {
+    if resets_at <= after || resets_at > after + WINDOW_SECS + CLOCK_SKEW_SECS {
+        return Err(format!(
+            "Codex reported an unexpected 5h limit reset ({resets_at})"
+        ));
+    }
+    Ok(())
 }
 
 /// Could the 5-hour window read between `before` and `after` be the "not running" placeholder?
 /// Live-tested 2026-10-01 (codex-cli 0.159.3, no Codex use for the window's lifetime): two reads
 /// 20 min apart both reported usedPercent 0 and resetsAt = read time + 5h, i.e. the placeholder
 /// moves with the clock and reading does not start a window. A running window resets earlier
-/// than that; a reset already past or beyond 5h away is not something Codex reports, so stop.
-/// A window started within the clock-skew allowance also passes; `moved` settles it.
+/// than that; anything else fails `check_reset`. A window started within the clock-skew allowance also passes; `moved` settles it.
 fn looks_inactive(
     resets_at: i64,
     used: Option<i64>,
     before: i64,
     after: i64,
 ) -> Result<bool, String> {
-    if resets_at <= after || resets_at > after + WINDOW_SECS + CLOCK_SKEW_SECS {
-        return Err(format!(
-            "Codex reported an unexpected 5h limit reset ({resets_at})"
-        ));
-    }
+    check_reset(resets_at, after)?;
     Ok(used == Some(0) && resets_at >= before + WINDOW_SECS - CLOCK_SKEW_SECS)
 }
 
@@ -219,9 +235,7 @@ fn looks_inactive(
 /// first reply time + 2 s before the second request: about the same as the unavoidable gap
 /// between that request and sending the start prompt. Anything else is unclear: nothing is sent.
 fn moved(first: &Snapshot, second: &Snapshot) -> Result<bool, String> {
-    let (Some(r1), Some(r2)) = (first.resets_at, second.resets_at) else {
-        return Err("Codex stopped reporting its 5h limit reset; nothing sent".into());
-    };
+    let (r1, r2) = (first.resets_at, second.resets_at);
     if (r2 - r1).abs() <= 1 {
         return Ok(false);
     }
@@ -268,7 +282,7 @@ mod tests {
     fn parses_real_rate_limit_response() {
         // Captured from codex-cli 0.159.1 (trimmed).
         let r: Value = serde_json::from_str(r#"{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":1790801242},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1791197709},"planType":"plus"}}"#).unwrap();
-        assert_eq!(parse_rate_limits(&r).unwrap(), (Some(1790801242), Some(0)));
+        assert_eq!(parse_rate_limits(&r).unwrap(), (1790801242, Some(0)));
     }
 
     #[test]
@@ -301,7 +315,7 @@ mod tests {
     /// A read sent at `sent` (Unix s) answered `reply_ms` later, reporting `reset` at 0% used.
     fn snap(reset: i64, sent: i64, reply_ms: i64) -> Snapshot {
         Snapshot {
-            resets_at: Some(reset),
+            resets_at: reset,
             used: Some(0),
             sent_ms: sent * 1000,
             replied_ms: sent * 1000 + reply_ms,
@@ -320,7 +334,7 @@ mod tests {
         // Started 30 s before the check with 0% used: passes the first look...
         let reset = T + WINDOW_SECS - 30;
         let (first, second) = (snap(reset, T, 600), snap(reset, T + 11, 600));
-        assert_eq!(first.looks_inactive(reset), Ok(true));
+        assert_eq!(first.looks_inactive(), Ok(true));
         // ...but its reset is fixed across the recheck, so it is running.
         assert_eq!(moved(&first, &second), Ok(false));
         assert_eq!(moved(&first, &snap(reset + 1, T + 11, 600)), Ok(false)); // rounding
@@ -361,7 +375,7 @@ mod tests {
                     let first = snap(placeholder(T * 1000 + a, round_up), T, reply_ms);
                     let r2 = placeholder(second_sent * 1000 + b, round_up);
                     let second = snap(r2, second_sent, reply_ms);
-                    assert_eq!(second.looks_inactive(r2), Ok(true));
+                    assert_eq!(second.looks_inactive(), Ok(true));
                     assert_eq!(moved(&first, &second), Ok(true), "{reply_ms} {a} {b}");
                 }
             }
@@ -433,7 +447,7 @@ mod tests {
         assert!(now_ms() - snap.replied_ms >= MODEL_DELAY_MS);
         // The confirming read skips the model list: its status is fresh the moment it returns.
         let (snap, models) = read_from(&mut fake_session(), false).unwrap();
-        assert!(snap.looks_inactive(snap.resets_at.unwrap()).unwrap());
+        assert!(snap.looks_inactive().unwrap());
         assert_eq!(models, Value::Null);
         assert!(now_ms() - snap.replied_ms < 1000);
     }
@@ -443,9 +457,46 @@ mod tests {
         let weekly_only = json!({"rateLimits":{"primary":{"usedPercent":5,"windowDurationMins":10080,"resetsAt":9},"secondary":null}});
         assert!(parse_rate_limits(&weekly_only).is_err());
         let swapped = json!({"rateLimits":{"primary":{"windowDurationMins":10080,"resetsAt":9},"secondary":{"windowDurationMins":300,"resetsAt":7}}});
-        assert_eq!(parse_rate_limits(&swapped).unwrap().0, Some(7));
+        assert_eq!(parse_rate_limits(&swapped).unwrap().0, 7);
+    }
+
+    #[test]
+    fn unrecognized_5h_limit_stops_the_start() {
+        // Other buckets are not the 5h limit, however short.
+        for mins in [15, 0, -300, 360] {
+            let other = json!({"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":mins,"resetsAt":9}}});
+            assert!(parse_rate_limits(&other).is_err(), "{mins}");
+        }
+        // Missing, null or mistyped reset: not the placeholder (which has one), so nothing is sent.
+        for reset in [json!(null), json!("1790880307"), json!(1790880307.5)] {
+            let r = json!({"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":reset}}});
+            assert!(parse_rate_limits(&r).is_err(), "{reset}");
+        }
         let no_reset = json!({"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300}}});
-        assert_eq!(parse_rate_limits(&no_reset).unwrap().0, None);
+        assert!(parse_rate_limits(&no_reset).is_err());
+    }
+
+    #[test]
+    fn invalid_reset_after_a_start_is_not_reported_as_started() {
+        let reply = |reset: i64| json!({"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":reset}}});
+        // Two valid moving placeholder reads allow the start...
+        let first = Snapshot::new(&reply(T + WINDOW_SECS + 1), T * 1000, T * 1000 + 600).unwrap();
+        let s2 = T + 11;
+        let second =
+            Snapshot::new(&reply(s2 + WINDOW_SECS + 1), s2 * 1000, s2 * 1000 + 600).unwrap();
+        assert_eq!(moved(&first, &second), Ok(true));
+        // ...then the read after it must still report a possible reset.
+        let s3 = T + 20;
+        let read_after = |reset| Snapshot::new(&reply(reset), s3 * 1000, s3 * 1000 + 600);
+        for bad in [-1, 0, s3 - 60, s3 + 2 * WINDOW_SECS, i64::MIN, i64::MAX] {
+            assert!(read_after(bad).is_err(), "{bad}");
+        }
+        // A real just-started 5h limit, and one started a while ago, still read fine.
+        assert_eq!(
+            read_after(s3 + WINDOW_SECS).unwrap().resets_at,
+            s3 + WINDOW_SECS
+        );
+        assert!(read_after(s3 + 60).is_ok());
     }
 
     #[test]
