@@ -80,6 +80,14 @@ pub fn is_not_found(error: &str) -> bool {
     error.ends_with(NOT_FOUND)
 }
 
+/// End of every error after a request may have reached the provider (and started a 5h limit).
+/// Retrying could spend quota on a limit that is already running, so the tray does not.
+const MAYBE_SENT: &str = "(may have been sent; not retried)";
+
+pub fn maybe_sent(error: &str) -> bool {
+    error.ends_with(MAYBE_SENT)
+}
+
 /// Configured path, else the first `name{.exe,.cmd}` on PATH.
 fn resolve(command: &str, name: &str) -> Result<PathBuf, String> {
     if !command.trim().is_empty() {

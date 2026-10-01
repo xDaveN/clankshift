@@ -82,7 +82,12 @@ All triggers do nothing for a provider whose window is known to be running.
 
 A failed automatic (start or daily) anchor is retried every 10 minutes, but only within an hour
 of the trigger; later than that the reset would land somewhere the user did not ask for, so it
-gives up. Retries are in memory only. Failed manual starts are not retried.
+gives up. Retries are in memory only. Failed manual starts are not retried. A Claude failure after
+the request was launched (timeout, no 5h limit reported) is not retried either: the request may
+have started the 5h limit, and repeating it would only spend quota. Codex retries are safe because
+every Codex start is preceded by fresh status reads. A usable 5h reset Claude reports is kept even
+if the request then fails or its output breaks off (timeout); a missing or malformed reset never
+hides such a failure.
 
 ## What the tray shows
 

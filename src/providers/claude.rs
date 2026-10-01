@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Outcome, Session, now, resolve};
+use super::{MAYBE_SENT, Outcome, Session, now, resolve};
 use crate::config::ProviderConfig;
 use crate::schedule::started_now;
 
@@ -62,17 +62,30 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     let started = now();
     let mut s = Session::spawn(&program, &args, Duration::from_secs(120))?;
     s.close_stdin();
-    let mut lines = Vec::new();
-    while let Some(line) = s.next_line()? {
-        lines.push(line);
-    }
-    let resets_at =
-        parse_stream(&lines).map_err(|e| if e.is_empty() { s.stderr_tail() } else { e })?;
+    reply(&mut s, started)
+}
+
+/// The request's result. From launch on it may have reached Claude, so a failure is not retried.
+fn reply(s: &mut Session, started: i64) -> Result<(Outcome, Option<i64>), String> {
+    let resets_at = read_reply(s).map_err(|e| format!("{e} {MAYBE_SENT}"))?;
     let outcome = match resets_at {
         Some(r) if started_now(r, started) => Outcome::Anchored,
         _ => Outcome::AlreadyActive,
     };
     Ok((outcome, resets_at))
+}
+
+fn read_reply(s: &mut Session) -> Result<Option<i64>, String> {
+    let mut lines = Vec::new();
+    loop {
+        match s.next_line() {
+            Ok(Some(line)) => lines.push(line),
+            Ok(None) => break,
+            // A reset Claude already reported survives the broken stream; nothing else does.
+            Err(e) => return parse_stream(&lines).ok().flatten().map(Some).ok_or(e),
+        }
+    }
+    parse_stream(&lines).map_err(|e| if e.is_empty() { s.stderr_tail() } else { e })
 }
 
 const HEADERS: &str = "ANTHROPIC_CUSTOM_HEADERS";
@@ -205,25 +218,31 @@ fn parse_stream(lines: &[String]) -> Result<Option<i64>, String> {
         .iter()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
-    let result = events.iter().find(|e| e["type"] == "result");
-    if let Some(r) = result.filter(|r| r["is_error"] == true) {
-        let msg = r["result"]
-            .as_str()
-            .or(r["api_error_status"].as_str())
-            .unwrap_or("request failed");
-        return Err(format!("Claude: {msg}"));
+    let reset = events
+        .iter()
+        .filter(|e| e["type"] == "rate_limit_event")
+        .find_map(|e| {
+            let info = &e["rate_limit_info"];
+            let five = &info["unifiedWindows"]["five_hour"];
+            if five.is_object() {
+                Some(&five["resetsAt"])
+            } else {
+                (info["rateLimitType"] == "five_hour").then_some(&info["resetsAt"])
+            }
+        });
+    // A usable reset is kept even if the request then failed: it is what Claude says.
+    if let Some(r) = reset.and_then(Value::as_i64) {
+        return Ok(Some(r));
     }
-    for e in events.iter().filter(|e| e["type"] == "rate_limit_event") {
-        let info = &e["rate_limit_info"];
-        let five = &info["unifiedWindows"]["five_hour"];
-        if five.is_object() {
-            return Ok(five["resetsAt"].as_i64());
-        }
-        if info["rateLimitType"] == "five_hour" {
-            return Ok(info["resetsAt"].as_i64());
-        }
-    }
-    match result {
+    match events.iter().find(|e| e["type"] == "result") {
+        Some(r) if r["is_error"] == true => Err(format!(
+            "Claude: {}",
+            r["result"]
+                .as_str()
+                .or(r["api_error_status"].as_str())
+                .unwrap_or("request failed")
+        )),
+        _ if reset.is_some() => Ok(None),
         Some(_) => Err("Claude answered but did not report its 5h limit".into()),
         None => Err(String::new()),
     }
@@ -400,6 +419,135 @@ mod tests {
         assert!(out.contains(".config.json"), "{out}");
     }
 
+    /// A failure once the request has started may follow a started 5h limit: marked so the tray
+    /// does not send another. Failures before it (here: CLI not found) stay retryable.
+    #[cfg(windows)]
+    #[test]
+    fn failure_after_the_request_is_not_retried() {
+        let root = std::env::temp_dir().join(format!("clankshift-sent-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let status = serde_json::json!({"loggedIn":true,"authMethod":"claude.ai",
+            "apiProvider":"firstParty","configDirectory":root});
+        std::fs::write(root.join("status.json"), status.to_string()).unwrap();
+        // Answered, but without a 5h limit event (e.g. Claude stopped sending it).
+        let reply = r#"{"type":"result","subtype":"success","is_error":false,"result":"OK"}"#;
+        std::fs::write(root.join("reply.json"), reply).unwrap();
+        let fake = root.join("claude.cmd");
+        std::fs::write(
+            &fake,
+            "@echo off\r\n\
+             if \"%~3\"==\"auth\" (type \"%~dp0status.json\" & exit /b 0)\r\n\
+             type \"%~dp0reply.json\"\r\n",
+        )
+        .unwrap();
+        let run = |cli: &Path| {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "providers::claude::tests::anchor_child",
+                    "--exact",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("CLAUDE_CONFIG_DIR", &root)
+                .env("CLANKSHIFT_TEST_CLI", cli)
+                .env_remove(HEADERS)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let (sent, not_sent) = (run(&fake), run(&root.join("missing.exe")));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(sent.contains("did not report"), "{sent}");
+        assert!(sent.contains(&format!("{MAYBE_SENT}\")")), "{sent}");
+        assert!(not_sent.contains("not found"), "{not_sent}");
+        assert!(!not_sent.contains(MAYBE_SENT), "{not_sent}");
+    }
+
+    /// Not a real test: a fake `claude -p` stream run as a child of the test binary. Extra
+    /// arguments (harmless libtest filters) pick what it prints; "hang" then never ends.
+    #[test]
+    #[ignore]
+    fn fake_request() {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            return;
+        }
+        let arg = |a: &str| std::env::args().any(|x| x == a);
+        println!(); // end libtest's "test ... " line
+        let reset = |r: Value| {
+            let info = serde_json::json!({"rateLimitType":"five_hour","resetsAt":r});
+            println!(
+                "{}",
+                serde_json::json!({"type":"rate_limit_event","rate_limit_info":info})
+            );
+        };
+        if arg("reset") {
+            reset((now() + crate::schedule::WINDOW_SECS).into());
+        }
+        if arg("null-reset") {
+            reset(Value::Null);
+        }
+        if arg("error") {
+            println!(r#"{{"type":"result","is_error":true,"result":"request failed"}}"#);
+        }
+        if arg("hang") {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    /// `fake_request` printing `script`, through `reply` and the tray's state update:
+    /// (saved state, retry allowed).
+    fn finish_fake(script: &[&str]) -> (crate::state::ProviderState, bool) {
+        let mut args = vec![
+            "providers::claude::tests::fake_request",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+        ];
+        args.extend(script);
+        let exe = std::env::current_exe().unwrap();
+        let mut s = Session::spawn(&exe, &args, Duration::from_secs(3)).unwrap();
+        s.close_stdin();
+        let mut st = crate::state::ProviderState::default();
+        let retry = crate::tray::apply(&mut st, reply(&mut s, now()), now());
+        (st, retry)
+    }
+
+    #[test]
+    fn reported_reset_survives_a_broken_stream() {
+        let (st, retry) = finish_fake(&["reset", "hang"]);
+        assert!(
+            st.resets_at.is_some_and(|r| started_now(r, now())),
+            "{st:?}"
+        );
+        assert!(crate::schedule::known_active(st.resets_at, now()));
+        assert_eq!((st.last_error, retry), (None, false));
+        // Control: a usable reset before an error result is kept too.
+        let (st, retry) = finish_fake(&["reset", "error"]);
+        assert!(st.resets_at.is_some() && st.last_error.is_none() && !retry);
+    }
+
+    #[test]
+    fn incomplete_reset_does_not_hide_a_failure() {
+        for script in [
+            &["null-reset", "error"][..],
+            &["null-reset", "hang"],
+            &["hang"],
+        ] {
+            let (st, retry) = finish_fake(script);
+            let e = st.last_error.unwrap_or_default();
+            assert!(crate::providers::maybe_sent(&e), "{script:?}: {e}");
+            assert!(st.resets_at.is_none() && !retry, "{script:?}");
+        }
+        // Control: a failure known to precede the request stays retryable.
+        let mut st = crate::state::ProviderState::default();
+        assert!(crate::tray::apply(
+            &mut st,
+            Err("claude CLI not found".into()),
+            now()
+        ));
+    }
+
     /// Windows only: macOS treats both spellings as one directory.
     #[cfg(windows)]
     #[test]
@@ -475,6 +623,12 @@ mod tests {
         let out = lines(&[r#"{"type":"result","is_error":true,"result":"Not logged in"}"#]);
         assert_eq!(parse_stream(&out).unwrap_err(), "Claude: Not logged in");
         assert_eq!(parse_stream(&lines(&["garbage"])).unwrap_err(), "");
+        // A reported reset survives a failed request (e.g. rejected while the limit runs).
+        let limited = lines(&[
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":42,"rateLimitType":"five_hour"}}"#,
+            r#"{"type":"result","is_error":true,"result":"limit reached"}"#,
+        ]);
+        assert_eq!(parse_stream(&limited).unwrap(), Some(42));
         let no_event = lines(&[r#"{"type":"result","is_error":false,"result":"OK"}"#]);
         assert!(
             parse_stream(&no_event)
