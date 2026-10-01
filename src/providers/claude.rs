@@ -400,6 +400,8 @@ mod tests {
         assert!(out.contains(".config.json"), "{out}");
     }
 
+    /// Windows only: macOS treats both spellings as one directory.
+    #[cfg(windows)]
     #[test]
     fn legacy_config_is_checked_where_claude_loads_it() {
         // CLAUDE_CONFIG_DIR = decomposed "cafe\u{301}" (clean); Claude loads the legacy file from
