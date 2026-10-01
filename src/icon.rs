@@ -1,38 +1,57 @@
 //! The app icon, drawn in code so it is sharp at every size and there is no image asset to maintain.
 //! Used at runtime (tray, settings window) and by build.rs (the .exe icon on Windows).
 
-/// Straight-alpha RGBA pixels of a `size`×`size` icon: an amber clock face.
+/// Straight-alpha RGBA pixels of a `size`×`size` icon: a robot head in an amber hard hat.
 pub fn rgba(size: u32) -> Vec<u8> {
-    let s = size as f32;
-    // Coverage of a shape with signed distance `d` (unit coordinates), anti-aliased over one pixel.
-    let cover = |d: f32| (0.5 - d * s).clamp(0.0, 1.0);
+    const STEEL: [f32; 3] = [85.0, 96.0, 111.0];
+    const CYAN: [f32; 3] = [94.0, 230.0, 240.0];
+    const INK: [f32; 3] = [43.0, 30.0, 20.0];
+    const AMBER: [f32; 3] = [245.0, 165.0, 36.0];
+    const DEEP_AMBER: [f32; 3] = [217.0, 130.0, 26.0];
+    // Shapes are laid out on a 64×64 grid; a pixel is 64/size grid units.
+    let unit = 64.0 / size as f32;
+    // Coverage of a shape with signed distance `d` (grid units), anti-aliased over one pixel.
+    let cover = |d: f32| (0.5 - d / unit).clamp(0.0, 1.0);
     let mut out = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
-            let (px, py) = ((x as f32 + 0.5) / s, (y as f32 + 0.5) / s);
-            let r = (px - 0.5).hypot(py - 0.5);
-            let face = cover(r - 0.47);
-            let rim = cover((r - 0.44).abs() - 0.04);
-            let hands = cover(segment(px, py, (0.5, 0.5), (0.5, 0.2)) - 0.05)
-                .max(cover(segment(px, py, (0.5, 0.5), (0.71, 0.5)) - 0.05));
-            // Vertical gradient from light to deep amber.
-            let top = [250.0, 190.0, 80.0];
-            let bottom = [226.0, 128.0, 20.0];
-            let mut c = [0.0; 3];
-            for i in 0..3 {
-                let base = top[i] + (bottom[i] - top[i]) * py;
-                let with_rim = base + ([176.0, 92.0, 10.0][i] - base) * rim;
-                c[i] = with_rim + ([43.0, 30.0, 20.0][i] - with_rim) * hands;
+            let p = ((x as f32 + 0.5) * unit, (y as f32 + 0.5) * unit);
+            // Back to front.
+            let dome = ((p.0 - 32.0) / 18.0).hypot((p.1 - 27.0) / 17.0) - 1.0;
+            let layers = [
+                (rounded_box(p, (12.0, 26.0), (52.0, 58.0), 8.0), STEEL), // head
+                (
+                    circle(p, (24.0, 41.0), 5.0).min(circle(p, (40.0, 41.0), 5.0)),
+                    CYAN,
+                ), // eyes
+                (rounded_box(p, (25.0, 50.0), (39.0, 53.5), 1.75), INK),  // mouth
+                ((dome * 17.0).max(p.1 - 27.0), AMBER),                   // hat dome
+                (rounded_box(p, (29.0, 10.0), (35.0, 26.0), 3.0), DEEP_AMBER), // hat ridge
+                (rounded_box(p, (6.0, 24.0), (58.0, 30.0), 3.0), DEEP_AMBER), // hat brim
+            ];
+            // Premultiplied "over" compositing.
+            let (mut c, mut a) = ([0.0f32; 3], 0.0f32);
+            for (d, color) in layers {
+                let k = cover(d);
+                for i in 0..3 {
+                    c[i] = color[i] * k + c[i] * (1.0 - k);
+                }
+                a = k + a * (1.0 - k);
             }
-            out.extend_from_slice(&[c[0] as u8, c[1] as u8, c[2] as u8, (face * 255.0) as u8]);
+            let px = |v: f32| if a > 0.0 { (v / a).round() as u8 } else { 0 };
+            out.extend_from_slice(&[px(c[0]), px(c[1]), px(c[2]), (a * 255.0).round() as u8]);
         }
     }
     out
 }
 
-/// Distance from point (px, py) to the segment a–b.
-fn segment(px: f32, py: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let t = (((px - a.0) * dx + (py - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-    (px - a.0 - t * dx).hypot(py - a.1 - t * dy)
+fn circle(p: (f32, f32), center: (f32, f32), r: f32) -> f32 {
+    (p.0 - center.0).hypot(p.1 - center.1) - r
+}
+
+/// Signed distance to the box from `min` to `max` with corner radius `r`.
+fn rounded_box(p: (f32, f32), min: (f32, f32), max: (f32, f32), r: f32) -> f32 {
+    let qx = (p.0 - (min.0 + max.0) / 2.0).abs() - (max.0 - min.0) / 2.0 + r;
+    let qy = (p.1 - (min.1 + max.1) / 2.0).abs() - (max.1 - min.1) / 2.0 + r;
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
 }
