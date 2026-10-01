@@ -49,6 +49,18 @@ ClankShift still reads Codex status only when an anchor is due.
 **Claude.** There is no documented quota-free status. `claude -p ... --output-format stream-json`
 emits a `rate_limit_event` with the authoritative 5-hour `resetsAt`, so the anchor request is also
 the status check. It is skipped while a previously reported window is still running.
+Nothing is sent unless `claude auth status` reports a claude.ai sign-in used directly: an API key,
+auth token, apiKeyHelper or Bedrock/Vertex setting would take precedence and bill paid usage. The
+request skips user/project settings (`--setting-sources ""`). `ANTHROPIC_CUSTOM_HEADERS` can carry an
+API key or bearer token that `auth status` does not show, so ClankShift refuses when it is set in its
+environment or in the `env` object of Claude Code's global config, which Claude still loads: the
+legacy `.config.json` in its config dir if present, else `.claude.json` in `CLAUDE_CONFIG_DIR` or the
+home folder. Both are checked. Claude normalizes the config dir (Unicode NFC) before looking for the
+legacy file, so that file is checked in the `configDirectory` reported by `auth status`, not a
+re-derived path; `auth status` runs with the same `--setting-sources ""` as the request (placed
+before `auth`), since user settings can relocate `CLAUDE_CONFIG_DIR`. Only that `env` entry is inspected. `CLAUDE_CONFIG_DIR` must be unset or absolute:
+Claude resolves a relative or empty value against its own working directory, so those are refused.
+Admin-managed policy is trusted.
 
 **Window classification** (`schedule.rs`, descriptive only): after a request was sent, a reported
 reset time within 10 minutes of `now + 5h` means the window started with this call; anything
