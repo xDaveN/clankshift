@@ -28,8 +28,8 @@ they can follow.
 You need Windows 10/11 and the [Codex CLI](https://github.com/openai/codex) and/or
 [Claude Code](https://github.com/anthropics/claude-code), signed in with your subscription.
 
-1. Grab the zip from [Releases](https://github.com/xDaveN/clankshift/releases).
-2. Extract it anywhere and run `clankshift.exe`.
+Download `clankshift.exe` from [Releases](https://github.com/xDaveN/clankshift/releases), put it
+somewhere permanent and run it. To update, replace the file.
 
 It isn't code-signed, so SmartScreen may complain the first time: *More info → Run anyway*.
 

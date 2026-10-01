@@ -1,5 +1,5 @@
 # release-plz keeps a release PR open with the next version + changelog (from Conventional Commits).
-# Merging it tags the version, creates the GitHub Release, and the Windows zip is attached.
+# Merging it tags the version, creates the GitHub Release, and clankshift.exe is attached.
 name: Release
 
 on:
@@ -57,8 +57,8 @@ jobs:
           # token, see CONTRIBUTING.md) makes the required checks run on the release PR.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
 
-  windows-zip:
-    name: Windows zip
+  windows-exe:
+    name: Windows exe
     needs: release
     if: needs.release.outputs.tag != ''
     runs-on: windows-latest
@@ -71,11 +71,8 @@ jobs:
         with:
           ref: ${{ needs.release.outputs.tag }}
       - run: cargo build --release --locked
-      - name: Package and upload
-        shell: pwsh
+      # Same file name every release, so updating keeps the Start with Windows entry valid.
+      - name: Upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $zip = "clankshift-$env:TAG-windows-x64.zip"
-          Compress-Archive -Path target/release/clankshift.exe, README.md, LICENSE-MIT, LICENSE-APACHE -DestinationPath $zip
-          gh release upload $env:TAG $zip
+        run: gh release upload ${{ env.TAG }} target/release/clankshift.exe

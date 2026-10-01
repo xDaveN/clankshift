@@ -27,7 +27,7 @@ Contributions are dual licensed under MIT and Apache-2.0, like the rest of the p
 ## Releasing
 
 [release-plz](https://release-plz.dev) keeps a release PR open on `main`. Merging it tags the
-version, creates the GitHub Release and attaches the Windows zip.
+version, creates the GitHub Release and attaches `clankshift.exe`.
 
 That PR is opened by a bot, so its CI waits for approval: *Checks* tab → *Approve workflows to run*,
 then merge once green. (A `RELEASE_PLZ_TOKEN` secret with a fine-grained PAT, *Contents* and
