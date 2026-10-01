@@ -8,8 +8,8 @@ pub fn hide_window(_cmd: &mut Command) {}
 
 pub struct ProcessGuard;
 
-pub fn contain(_child: &Child) -> ProcessGuard {
-    ProcessGuard
+pub fn contain(_child: &Child) -> Result<ProcessGuard, String> {
+    Ok(ProcessGuard)
 }
 
 pub fn single_instance() -> bool {
