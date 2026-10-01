@@ -79,6 +79,8 @@ Found a security issue? Please [report it privately](https://github.com/xDaveN/c
 
 ## License
 
-[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), your choice.
+[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), your choice. Each release attaches the licenses
+of what the exe includes: `THIRD-PARTY-LICENSES.txt` (libraries and fonts) and `RUST-LICENSES.html`
+(Rust standard library).
 
 Not affiliated with OpenAI or Anthropic.

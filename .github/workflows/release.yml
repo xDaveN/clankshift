@@ -1,5 +1,5 @@
 # release-plz keeps a release PR open with the next version + changelog (from Conventional Commits).
-# Merging it tags the version, creates the GitHub Release, and clankshift.exe is attached.
+# Merging it tags the version, creates the GitHub Release, and attaches the exe and license notices.
 name: Release
 
 on:
@@ -74,8 +74,15 @@ jobs:
       # .cargo/config.toml links the C runtime statically; fail rather than ship an exe needing it.
       - name: Check no VC++ runtime dependency
         run: if (Select-String -Path target/release/clankshift.exe -Pattern vcruntime -SimpleMatch -Quiet) { throw 'clankshift.exe imports the VC++ runtime' }
+      # Crate, font and Rust standard library notices, from the toolchain that built the exe.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: License notices
+        shell: bash
+        run: bash scripts/license-notices.sh target/notices
       # Same file name every release, so updating keeps the Start with Windows entry valid.
       - name: Upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ env.TAG }} target/release/clankshift.exe
+        run: gh release upload ${{ env.TAG }} target/release/clankshift.exe target/notices/THIRD-PARTY-LICENSES.txt target/notices/RUST-LICENSES.html
