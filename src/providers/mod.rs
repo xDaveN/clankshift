@@ -104,6 +104,20 @@ fn resolve(command: &str, name: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("{name} CLI {NOT_FOUND}"))
 }
 
+/// Why `Session::spawn` failed. `launched`: the process did start, with its arguments (which
+/// may carry a request), before it was stopped.
+#[derive(Debug)]
+struct SpawnError {
+    message: String,
+    launched: bool,
+}
+
+impl From<SpawnError> for String {
+    fn from(e: SpawnError) -> String {
+        e.message
+    }
+}
+
 /// A short-lived, hidden provider process read line by line with a hard deadline.
 /// Dropping it kills the process and anything it spawned.
 struct Session {
@@ -116,7 +130,7 @@ struct Session {
 }
 
 impl Session {
-    fn spawn(program: &PathBuf, args: &[&str], timeout: Duration) -> Result<Self, String> {
+    fn spawn(program: &PathBuf, args: &[&str], timeout: Duration) -> Result<Self, SpawnError> {
         let mut cmd = Command::new(program);
         cmd.args(args)
             .current_dir(std::env::temp_dir())
@@ -124,11 +138,29 @@ impl Session {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         platform::hide_window(&mut cmd);
-        let mut child = cmd.spawn().map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => format!("{} {NOT_FOUND}", program.display()),
-            _ => format!("failed to start {}: {e}", program.display()),
+        let mut child = cmd.spawn().map_err(|e| SpawnError {
+            message: match e.kind() {
+                std::io::ErrorKind::NotFound => format!("{} {NOT_FOUND}", program.display()),
+                _ => format!("failed to start {}: {e}", program.display()),
+            },
+            launched: false,
         })?;
         let guard = platform::contain(&child);
+        #[cfg(test)]
+        let guard = match std::env::var("CLANKSHIFT_TEST_UNCONTAINED") {
+            Ok(arg) if args.contains(&arg.as_str()) => Err("injected failure".into()),
+            _ => guard,
+        };
+        // Without containment a timeout could leave e.g. node/codex running, so stop it. It has
+        // already been running, though, and may have acted on its arguments.
+        let guard = guard.map_err(|e| {
+            let _ = child.kill();
+            let _ = child.wait();
+            SpawnError {
+                message: format!("could not contain {}: {e}", program.display()),
+                launched: true,
+            }
+        })?;
 
         let (tx, lines) = channel();
         let stdout = child.stdout.take().unwrap();
@@ -210,7 +242,8 @@ mod tests {
         )
         .err()
         .unwrap();
-        assert!(is_not_found(&e), "{e}");
+        assert!(!e.launched);
+        assert!(is_not_found(&e.message), "{}", e.message);
         assert!(!is_not_found("model not found"));
     }
 }

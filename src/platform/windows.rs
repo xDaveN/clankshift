@@ -43,29 +43,35 @@ unsafe impl Send for ProcessGuard {}
 
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { CloseHandle(self.0) };
-        }
+        unsafe { CloseHandle(self.0) };
     }
 }
 
+/// Puts the child in a job that kills its whole tree when the guard drops. Errors if Windows refuses.
 // ponytail: grandchildren spawned before assignment would escape; the provider CLIs take far longer than this to start.
-pub fn contain(child: &Child) -> ProcessGuard {
+pub fn contain(child: &Child) -> Result<ProcessGuard, String> {
+    let err = |what| format!("{what} failed (error {})", unsafe { GetLastError() });
     unsafe {
         let job = CreateJobObjectW(null(), null());
         if job.is_null() {
-            return ProcessGuard(job);
+            return Err(err("CreateJobObject"));
         }
+        let guard = ProcessGuard(job);
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(
+        if SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,
             (&raw const info).cast(),
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        );
-        AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE);
-        ProcessGuard(job)
+        ) == 0
+        {
+            return Err(err("SetInformationJobObject"));
+        }
+        if AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) == 0 {
+            return Err(err("AssignProcessToJobObject"));
+        }
+        Ok(guard)
     }
 }
 
@@ -182,4 +188,27 @@ pub fn notify(tray: &tray_icon::TrayIcon, text: &str) -> bool {
 
 pub fn open_folder(path: &std::path::Path) {
     let _ = Command::new("explorer").arg(path).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contain_kills_tree_or_reports_failure() {
+        // cmd -> ping, like the npm cmd -> node -> codex chain.
+        let mut c = Command::new("cmd")
+            .args(["/c", "ping -n 30 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let guard = contain(&c).unwrap();
+        drop(guard);
+        let t = std::time::Instant::now();
+        c.wait().unwrap();
+        assert!(t.elapsed().as_secs() < 5, "job close did not kill the tree");
+
+        // An exited process can't be assigned; that must be an error, not a silent no-op guard.
+        let e = contain(&c).err().unwrap();
+        assert!(e.contains("AssignProcessToJobObject"), "{e}");
+    }
 }

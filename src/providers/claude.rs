@@ -67,7 +67,14 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
         "--verbose",
     ];
     let started = now();
-    let mut s = Session::spawn(&program, &args, Duration::from_secs(120))?;
+    // Launched with the prompt, so even a launch that then fails may have sent it.
+    let mut s = Session::spawn(&program, &args, Duration::from_secs(120)).map_err(|e| {
+        if e.launched {
+            format!("{} {MAYBE_SENT}", e.message)
+        } else {
+            e.message
+        }
+    })?;
     s.close_stdin();
     reply(&mut s, started)
 }
@@ -296,7 +303,10 @@ mod tests {
             command: std::env::var("CLANKSHIFT_TEST_CLI").unwrap_or(r"Z:\nope\claude.exe".into()),
             model: String::new(),
         };
-        println!("RESULT {:?}", anchor(&cfg));
+        let result = anchor(&cfg);
+        println!("RESULT {result:?}");
+        let mut st = crate::state::ProviderState::default();
+        println!("RETRY {}", crate::tray::apply(&mut st, result, now()));
     }
 
     /// `anchor` result in a child with a clean environment apart from `header`, inside a
@@ -485,6 +495,54 @@ mod tests {
         assert!(sent.contains(&format!("{MAYBE_SENT}\")")), "{sent}");
         assert!(not_sent.contains("not found"), "{not_sent}");
         assert!(!not_sent.contains(MAYBE_SENT), "{not_sent}");
+    }
+
+    /// Containment failing after the request process launched (it may have run, as here) is
+    /// possibly sent, so the tray plans no retry. Failing on `auth status` sent nothing: retryable.
+    #[cfg(windows)]
+    #[test]
+    fn uncontained_request_is_not_retried() {
+        let root = std::env::temp_dir().join(format!("clankshift-jobfail-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let status = serde_json::json!({"loggedIn":true,"authMethod":"claude.ai",
+            "apiProvider":"firstParty","configDirectory":root});
+        std::fs::write(root.join("status.json"), status.to_string()).unwrap();
+        let fake = root.join("claude.cmd");
+        std::fs::write(
+            &fake,
+            "@echo off
+             if \"%~3\"==\"auth\" (type \"%~dp0status.json\" & exit /b 0)
+             echo request>>\"%~dp0requests.txt\"
+",
+        )
+        .unwrap();
+        let run = |fail_on: &str| {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "providers::claude::tests::anchor_child",
+                    "--exact",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("CLAUDE_CONFIG_DIR", &root)
+                .env("CLANKSHIFT_TEST_CLI", &fake)
+                .env("CLANKSHIFT_TEST_UNCONTAINED", fail_on)
+                .env_remove(HEADERS)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let auth = run("auth");
+        let auth_sent = root.join("requests.txt").exists();
+        let request = run("-p");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!auth_sent, "request launched after auth failed: {auth}");
+        assert!(request.contains("could not contain"), "{request}");
+        assert!(request.contains(&format!("{MAYBE_SENT}\")")), "{request}");
+        assert!(request.contains("RETRY false"), "{request}");
+        assert!(auth.contains("could not contain"), "{auth}");
+        assert!(!auth.contains(MAYBE_SENT), "{auth}");
+        assert!(auth.contains("RETRY true"), "{auth}");
     }
 
     /// Not a real test: a fake `claude -p` stream run as a child of the test binary. Extra
