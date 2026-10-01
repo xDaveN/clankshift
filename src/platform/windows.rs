@@ -1,4 +1,5 @@
-//! Windows specifics: hidden child processes, process-tree cleanup, single instance, login startup.
+//! Windows specifics: hidden child processes, process-tree cleanup, single instance, login startup,
+//! tray notifications.
 
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
@@ -17,6 +18,9 @@ use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CreateMutexW};
+use windows_sys::Win32::UI::Shell::{
+    NIF_INFO, NIIF_NOSOUND, NIIF_RESPECT_QUIET_TIME, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
+};
 
 /// Suffixes tried when looking a CLI up on PATH (npm installs `codex.cmd`).
 pub const EXE_SUFFIXES: &[&str] = &[".exe", ".cmd"];
@@ -117,6 +121,28 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("registry error {err}"))
+    }
+}
+
+/// Shows a Windows notification from the tray icon. Silent, and held back during Do Not Disturb.
+/// Returns false if Windows refused it.
+pub fn notify(tray: &tray_icon::TrayIcon, text: &str) -> bool {
+    unsafe {
+        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+        nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = tray.window_handle();
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_NOSOUND | NIIF_RESPECT_QUIET_TIME;
+        let n = nid.szInfo.len() - 1; // keep the terminating zero
+        for (d, c) in nid.szInfo[..n].iter_mut().zip(text.encode_utf16()) {
+            *d = c;
+        }
+        // tray-icon doesn't expose the icon's number (uID). The hidden window belongs to this one
+        // icon only, so the first number Windows accepts is ours.
+        (1..=8).any(|id| {
+            nid.uID = id;
+            Shell_NotifyIconW(NIM_MODIFY, &nid) != 0
+        })
     }
 }
 

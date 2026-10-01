@@ -15,7 +15,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use crate::config::Config;
-use crate::providers::{Outcome, Provider, now};
+use crate::providers::{Outcome, Provider, is_not_found, now};
 use crate::schedule::{GRACE_SECS, known_active, next_daily, next_retry};
 use crate::state::{State, data_dir, log};
 use crate::{icon, platform};
@@ -107,8 +107,8 @@ impl App {
             start: Provider::ALL.map(|_| MenuItem::new("", true, None)),
             auto: CheckMenuItem::new("", true, self.config.auto_anchor, None),
             settings: MenuItem::new("Settings…", true, None),
-            logs: MenuItem::new("Open log folder", true, None),
-            quit: MenuItem::new("Quit ClankShift", true, None),
+            logs: MenuItem::new("Open logs", true, None),
+            quit: MenuItem::new("Quit", true, None),
         };
         let sep = PredefinedMenuItem::separator;
         let menu = Menu::new();
@@ -232,7 +232,6 @@ impl App {
                     resets_at.map_or("unknown".into(), |r| r.to_string())
                 ));
                 st.resets_at = resets_at;
-                st.started_by_us = outcome == Outcome::Anchored;
                 st.checked_at = Some(now());
                 st.last_error = None;
             }
@@ -282,25 +281,25 @@ impl App {
     fn status(&self, p: Provider, now: i64) -> String {
         let st = p.state(&self.state);
         let text = if !p.config(&self.config).enabled {
-            "turned off".to_string()
+            "Off".to_string()
         } else if self.busy[idx(p)] {
-            "checking…".to_string()
-        } else if let Some(e) = &st.last_error {
-            let retry = self.retry[idx(p)].map_or(String::new(), |(_, at)| {
-                format!(" (trying again at {})", fmt_time(at, now))
-            });
-            format!("problem: {}{retry}", truncate(e, 60))
+            "Checking…".to_string()
+        } else if st.last_error.as_deref().is_some_and(is_not_found) {
+            "Not found, set path in Settings".to_string()
+        } else if st.last_error.is_some() {
+            // The reason is in the log.
+            match self.retry[idx(p)] {
+                Some((_, at)) => format!("Error, retrying {}", fmt_time(at, now)),
+                None => "Error, see logs".to_string(),
+            }
         } else {
             match st.resets_at {
-                Some(r) if r > now && st.started_by_us => {
-                    format!("resets at {} (started by ClankShift)", fmt_time(r, now))
-                }
-                Some(r) if r > now => format!("resets at {}", fmt_time(r, now)),
-                Some(r) => format!("last known 5h limit ended {}", fmt_time(r, now)),
-                None => "not checked yet".to_string(),
+                Some(r) if r > now => format!("Resets {}", fmt_time(r, now)),
+                Some(r) => format!("Ended {}", fmt_time(r, now)),
+                None => "Not checked yet".to_string(),
             }
         };
-        format!("{}: {text}", p.name())
+        format!("{} · {text}", p.name())
     }
 
     fn refresh_menu(&self) {
@@ -319,19 +318,17 @@ impl App {
             }
             let active = known_active(p.state(&self.state).resets_at, now);
             items.start[i].set_enabled(p.config(&self.config).enabled && !self.busy[i] && !active);
-            let suffix = if active { " (already running)" } else { "" };
-            items.start[i].set_text(format!("Start {} 5h limit now{suffix}", p.name()));
+            items.start[i].set_text(format!("Start {} 5h limit", p.name()));
         }
         items.auto.set_checked(self.config.auto_anchor);
         items
             .auto
             .set_text(match (&self.config_error, self.next_daily()) {
-                (Some(_), _) => "Start 5h limits automatically (settings file error)".to_string(),
-                (None, Some(t)) => format!(
-                    "Start 5h limits automatically (next {})",
-                    fmt_time(t.as_second(), now)
-                ),
-                (None, None) => "Start 5h limits automatically".to_string(),
+                (Some(_), _) => "Automatic starts · settings file error".to_string(),
+                (None, Some(t)) => {
+                    format!("Automatic starts · next {}", fmt_time(t.as_second(), now))
+                }
+                (None, None) => "Automatic starts".to_string(),
             });
         items.settings.set_enabled(!self.settings_open);
         // Windows truncates tray tooltips at 127 characters.
@@ -366,6 +363,11 @@ impl ApplicationHandler<UserEvent> for App {
                     log(&format!("could not create tray icon: {e}"));
                     event_loop.exit();
                     return;
+                }
+                if let Some((tray, _)) = &self.tray
+                    && !platform::notify(tray, "ClankShift is running in the system tray.")
+                {
+                    log("could not show the startup notification");
                 }
                 if self.config.auto_anchor && self.config.anchor_on_start {
                     self.anchor_enabled("ClankShift started");
@@ -439,11 +441,6 @@ fn fmt_time(epoch: i64, now: i64) -> String {
     } else {
         t.strftime("%a %H:%M").to_string()
     }
-}
-
-/// First line of `s`, shortened to `max` characters with an ellipsis.
-fn truncate(s: &str, max: usize) -> String {
-    truncate_chars(s.lines().next().unwrap_or(""), max)
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
