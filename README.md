@@ -48,14 +48,14 @@ The executable is not code-signed yet, so Windows SmartScreen may warn on first 
 Everything is in the tray icon menu:
 
 - each provider's 5h limit: when it resets, or when the last known one ended (hover the icon for the same summary)
-- **Start Codex/Claude 5h limit now**, disabled while one is known to be running
-- **Start 5h limits automatically** on/off
-- **Settings…**: providers, start 5h limits when ClankShift starts and/or every day at a set time,
-  start ClankShift at login, and program paths
-- **Open log folder**
+- **Start Codex/Claude 5h limit**, disabled while one is known to be running
+- **Automatic starts** on/off (same as *Master switch* in Settings)
+- **Settings…**: providers, start 5h limits on launch and/or every day at a set time,
+  start with Windows, and program paths
+- **Open logs**: error details are here
 
 Example: to have resets at 12:00 and 17:00, start them at 07:00: turn on *Every day at 07:00*,
-or *Start ClankShift when I log in* if you log in around then.
+or *On launch* with *Start with Windows* if you log in around then.
 
 Files:
 

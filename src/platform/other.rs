@@ -24,6 +24,10 @@ pub fn set_autostart(_on: bool) -> Result<(), String> {
     Err("Start at login is not supported on this platform yet".into())
 }
 
+pub fn notify(_tray: &tray_icon::TrayIcon, _text: &str) -> bool {
+    true
+}
+
 pub fn open_folder(path: &std::path::Path) {
     let opener = if cfg!(target_os = "macos") {
         "open"

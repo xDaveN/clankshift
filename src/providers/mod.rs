@@ -73,6 +73,13 @@ pub fn now() -> i64 {
     jiff::Timestamp::now().as_second()
 }
 
+/// End of every "program not found" error; the tray uses it to point the user at Settings.
+const NOT_FOUND: &str = "not found (set its path in Settings)";
+
+pub fn is_not_found(error: &str) -> bool {
+    error.ends_with(NOT_FOUND)
+}
+
 /// Configured path, else the first `name{.exe,.cmd}` on PATH.
 fn resolve(command: &str, name: &str) -> Result<PathBuf, String> {
     if !command.trim().is_empty() {
@@ -86,7 +93,7 @@ fn resolve(command: &str, name: &str) -> Result<PathBuf, String> {
                 .map(move |s| dir.join(format!("{name}{s}")))
         })
         .find(|p| p.is_file())
-        .ok_or_else(|| format!("{name} CLI not found on PATH (set its path in Settings)"))
+        .ok_or_else(|| format!("{name} CLI {NOT_FOUND}"))
 }
 
 /// A short-lived, hidden provider process read line by line with a hard deadline.
@@ -109,9 +116,10 @@ impl Session {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         platform::hide_window(&mut cmd);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to start {}: {e}", program.display()))?;
+        let mut child = cmd.spawn().map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => format!("{} {NOT_FOUND}", program.display()),
+            _ => format!("failed to start {}: {e}", program.display()),
+        })?;
         let guard = platform::contain(&child);
 
         let (tx, lines) = channel();
@@ -176,5 +184,25 @@ impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_program_is_not_found() {
+        let e = resolve("", "clankshift-no-such-program").unwrap_err();
+        assert!(is_not_found(&e), "{e}");
+        let e = Session::spawn(
+            &PathBuf::from(r"Z:\nope\codex.exe"),
+            &[],
+            Duration::from_secs(1),
+        )
+        .err()
+        .unwrap();
+        assert!(is_not_found(&e), "{e}");
+        assert!(!is_not_found("model not found"));
     }
 }

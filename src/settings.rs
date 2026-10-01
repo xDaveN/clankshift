@@ -38,13 +38,13 @@ pub fn run() {
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("ClankShift Settings")
+            .with_title("ClankShift")
             .with_icon(egui::IconData {
                 rgba: icon::rgba(64),
                 width: 64,
                 height: 64,
             })
-            .with_inner_size([480.0, 712.0])
+            .with_inner_size([480.0, 680.0])
             .with_resizable(false)
             .with_maximize_button(false),
         centered: true,
@@ -338,10 +338,6 @@ impl eframe::App for Settings {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("Settings");
-                    ui.label(
-                        RichText::new("Start your 5h limits early so they reset sooner.")
-                            .color(p.weak),
-                    );
 
                     if let Some(e) = &self.load_error {
                         ui.add_space(12.0);
@@ -371,13 +367,13 @@ impl eframe::App for Settings {
 
                     section(ui, "Automatic starts");
                     card(ui, |ui| {
-                        let title = "Start 5h limits automatically";
-                        row(ui, title, "Never while one is already running", |ui| {
+                        let title = "Master switch";
+                        row(ui, title, "", |ui| {
                             toggle(ui, &mut self.cfg.auto_anchor, title);
                         });
                         if self.cfg.auto_anchor {
                             divider(ui);
-                            let title = "When ClankShift launches";
+                            let title = "On launch";
                             row(ui, title, "", |ui| {
                                 toggle(ui, &mut self.cfg.anchor_on_start, title);
                             });
@@ -397,8 +393,13 @@ impl eframe::App for Settings {
 
                     section(ui, "General");
                     card(ui, |ui| {
-                        row(ui, "Launch at login", "", |ui| {
-                            toggle(ui, &mut self.autostart, "Launch at login");
+                        let title = if cfg!(windows) {
+                            "Start with Windows"
+                        } else {
+                            "Start at login"
+                        };
+                        row(ui, title, "", |ui| {
+                            toggle(ui, &mut self.autostart, title);
                         });
                     });
 
@@ -406,7 +407,13 @@ impl eframe::App for Settings {
                     card(ui, |ui| {
                         ui.add_space(4.0);
                         egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                            ui.label(RichText::new("Program paths").small().color(p.weak));
+                            ui.label(
+                                RichText::new(
+                                    "Only needed if ClankShift can't find Codex or Claude.",
+                                )
+                                .small()
+                                .color(p.weak),
+                            );
                             for (name, pc) in [
                                 ("Codex", &mut self.cfg.codex),
                                 ("Claude", &mut self.cfg.claude),

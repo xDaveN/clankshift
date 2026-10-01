@@ -53,7 +53,7 @@ Keep UI wording free of "window"/"anchor".
 
 ## Triggers
 
-- **Manual:** *Start … 5h limit now* in the tray.
+- **Manual:** *Start … 5h limit* in the tray.
 - **Start:** when ClankShift starts. With *Start at login* (per-user `Run` registry key, no
   admin rights), this is the login trigger.
 - **Daily:** at a local time (DST-aware). If missed by more than an hour (asleep/off), it is skipped.
