@@ -1,20 +1,49 @@
 //! Codex adapter.
 //!
 //! Status: `codex app-server` (stdio JSON-RPC) `account/rateLimits/read` returns the account's
-//! windows with `resetsAt` and costs no quota. Evidence so far suggests the read itself may start
-//! the 5-hour window, so ClankShift only reads at anchor time, never casually.
+//! windows with `resetsAt`, costs no quota and does not start a window (see `looks_inactive`).
+//! ClankShift still only reads at anchor time, never casually.
 //!
-//! Anchor: if the 5-hour window reported by the read did not just start, a window was already
-//! running and nothing is sent. Otherwise one ephemeral `codex exec` with the cheapest model at
-//! low effort makes sure the window is anchored, then the state is re-read.
+//! Anchor: unless two spaced reads show the moving "not running" placeholder, a window was
+//! already running (or the state is unclear) and nothing is sent. Otherwise one ephemeral
+//! `codex exec` with the cheapest model at low effort anchors the window, then the state is re-read.
 
 use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Outcome, Session, now, resolve};
+use super::{Outcome, Session, resolve};
 use crate::config::ProviderConfig;
-use crate::schedule::started_now;
+use crate::schedule::WINDOW_SECS;
+
+/// Allowed difference between our clock and Codex's, plus its 1 s rounding.
+const CLOCK_SKEW_SECS: i64 = 60;
+
+/// Pause between the two reads that tell the moving placeholder from a fixed reset.
+const RECHECK_SECS: u64 = 10;
+
+/// Slowest rate-limit reply that still tells a moving placeholder from a window started during
+/// the check (live replies: 0.5-1.2 s). Slower ones are unclear: nothing is sent.
+const MAX_REPLY_MS: i64 = 2000;
+
+/// The 5-hour window as read: (resetsAt, usedPercent).
+type Limit = (Option<i64>, Option<i64>);
+
+/// One rate-limit read: the 5-hour window, and when the request was sent and answered (Unix ms).
+struct Snapshot {
+    resets_at: Option<i64>,
+    used: Option<i64>,
+    sent_ms: i64,
+    replied_ms: i64,
+}
+
+impl Snapshot {
+    /// `looks_inactive` for this read, its timing rounded outwards to whole seconds.
+    fn looks_inactive(&self, resets_at: i64) -> Result<bool, String> {
+        let (before, after) = (self.sent_ms / 1000, (self.replied_ms + 999) / 1000);
+        looks_inactive(resets_at, self.used, before, after)
+    }
+}
 
 /// Cheapest-first. Any request anchors the window, so the cheapest model available wins.
 /// When OpenAI renames models, update this list; `codex.model` in config.toml overrides it,
@@ -23,32 +52,50 @@ const CHEAP_MODELS: &[&str] = &["gpt-6-luna", "gpt-5.6-luna"];
 
 pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     let program = resolve(&cfg.command, "codex")?;
-    let started = now();
-    let (resets_at, models) = read(&program)?;
-    if resets_at.is_some_and(|r| !started_now(r, started)) {
-        return Ok((Outcome::AlreadyActive, resets_at));
+    let pick = cfg.model.trim().is_empty();
+    let (first, models) = read(&program, pick)?;
+    if let Some(r) = first.resets_at
+        && !first.looks_inactive(r)?
+    {
+        return Ok((Outcome::AlreadyActive, first.resets_at));
     }
-    let model = if cfg.model.trim().is_empty() {
+    // Chosen before the confirming read: nothing slow may sit between it and the request.
+    let model = if pick {
         pick_model(&models)?
     } else {
         cfg.model.trim().to_string()
     };
+    if first.resets_at.is_some() {
+        // The placeholder, or a window started within the last minute or so: only the placeholder moves.
+        std::thread::sleep(Duration::from_secs(RECHECK_SECS));
+        let (second, _) = read(&program, false)?;
+        let r = second
+            .resets_at
+            .ok_or("Codex stopped reporting its 5h limit reset; nothing sent")?;
+        if !second.looks_inactive(r)? || !moved(&first, &second)? {
+            return Ok((Outcome::AlreadyActive, Some(r)));
+        }
+    }
     exec(&program, &model)?;
-    let (resets_at, _) = read(&program)?;
+    let (Snapshot { resets_at, .. }, _) = read(&program, false)?;
     if resets_at.is_none() {
         return Err("Codex did not report its 5h limit after the request".into());
     }
     Ok((Outcome::Anchored, resets_at))
 }
 
-/// One short app-server session: rate limits + model list.
-fn read(program: &std::path::PathBuf) -> Result<(Option<i64>, Value), String> {
+/// One short app-server session: rate limits, then the model list if `with_models` (else `Null`).
+/// The rate-limit request is sent only after initialization and alone, so its timing covers just
+/// Codex's answer, and without models the read returns the moment that answer arrives.
+fn read(program: &std::path::PathBuf, with_models: bool) -> Result<(Snapshot, Value), String> {
     let mut s = Session::spawn(program, &["app-server"], Duration::from_secs(45))?;
+    read_from(&mut s, with_models)
+}
+
+fn read_from(s: &mut Session, with_models: bool) -> Result<(Snapshot, Value), String> {
     s.send(r#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"clankshift","title":"ClankShift","version":"0.1.0"}}}"#)?;
-    s.send(r#"{"method":"initialized"}"#)?;
-    s.send(r#"{"id":2,"method":"account/rateLimits/read"}"#)?;
-    s.send(r#"{"id":3,"method":"model/list","params":{}}"#)?;
-    let (mut limits, mut models) = (None, None);
+    let (mut limits, mut models) = (None, (!with_models).then_some(Value::Null));
+    let (mut sent_ms, mut replied_ms) = (0, 0);
     while limits.is_none() || models.is_none() {
         let Some(line) = s.next_line()? else {
             return Err(format!(
@@ -59,20 +106,42 @@ fn read(program: &std::path::PathBuf) -> Result<(Option<i64>, Value), String> {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        let slot = match msg["id"].as_i64() {
-            Some(2) => &mut limits,
-            Some(3) => &mut models,
-            _ => continue,
-        };
-        if let Some(err) = msg.get("error") {
+        let id = msg["id"].as_i64();
+        if let Some(err) = msg.get("error").filter(|_| id.is_some()) {
             return Err(format!(
                 "codex app-server: {}",
                 err["message"].as_str().unwrap_or("request failed")
             ));
         }
-        *slot = Some(msg["result"].clone());
+        match id {
+            Some(1) => {
+                s.send(r#"{"method":"initialized"}"#)?;
+                s.send(r#"{"id":2,"method":"account/rateLimits/read"}"#)?;
+                sent_ms = now_ms();
+            }
+            Some(2) => {
+                replied_ms = now_ms();
+                limits = Some(msg["result"].clone());
+                if with_models {
+                    s.send(r#"{"id":3,"method":"model/list","params":{}}"#)?;
+                }
+            }
+            Some(3) => models = Some(msg["result"].clone()),
+            _ => {}
+        }
     }
-    Ok((parse_rate_limits(&limits.unwrap())?, models.unwrap()))
+    let (resets_at, used) = parse_rate_limits(&limits.unwrap())?;
+    let snapshot = Snapshot {
+        resets_at,
+        used,
+        sent_ms,
+        replied_ms,
+    };
+    Ok((snapshot, models.unwrap()))
+}
+
+fn now_ms() -> i64 {
+    jiff::Timestamp::now().as_millisecond()
 }
 
 fn exec(program: &std::path::PathBuf, model: &str) -> Result<(), String> {
@@ -111,16 +180,64 @@ fn exec(program: &std::path::PathBuf, model: &str) -> Result<(), String> {
     ))
 }
 
-/// Reset time of the 5-hour window: whichever slot has a short duration (weekly-only accounts have none).
-/// Ok(None) = the window exists but reports no reset time.
-fn parse_rate_limits(result: &Value) -> Result<Option<i64>, String> {
+/// Reset time and used percent of the 5-hour window: whichever slot has a short duration
+/// (weekly-only accounts have none). A `None` reset = the window exists but reports no reset time.
+fn parse_rate_limits(result: &Value) -> Result<Limit, String> {
     let rl = &result["rateLimits"];
     ["primary", "secondary"]
         .iter()
         .map(|slot| &rl[slot])
         .find(|w| w["windowDurationMins"].as_i64().is_some_and(|m| m <= 360))
-        .map(|w| w["resetsAt"].as_i64())
+        .map(|w| (w["resetsAt"].as_i64(), w["usedPercent"].as_i64()))
         .ok_or_else(|| "Codex reports no 5h limit for this account".into())
+}
+
+/// Could the 5-hour window read between `before` and `after` be the "not running" placeholder?
+/// Live-tested 2026-10-01 (codex-cli 0.159.3, no Codex use for the window's lifetime): two reads
+/// 20 min apart both reported usedPercent 0 and resetsAt = read time + 5h, i.e. the placeholder
+/// moves with the clock and reading does not start a window. A running window resets earlier
+/// than that; a reset already past or beyond 5h away is not something Codex reports, so stop.
+/// A window started within the clock-skew allowance also passes; `moved` settles it.
+fn looks_inactive(
+    resets_at: i64,
+    used: Option<i64>,
+    before: i64,
+    after: i64,
+) -> Result<bool, String> {
+    if resets_at <= after || resets_at > after + WINDOW_SECS + CLOCK_SKEW_SECS {
+        return Err(format!(
+            "Codex reported an unexpected 5h limit reset ({resets_at})"
+        ));
+    }
+    Ok(used == Some(0) && resets_at >= before + WINDOW_SECS - CLOCK_SKEW_SECS)
+}
+
+/// Did the reset move between two reads like the placeholder, which is reply time + 5h rounded to
+/// whole seconds, rather than stay fixed like a running window (live: 1790880307 at 15:45 and
+/// again at 15:48)? The move must fit the measured request-to-reply times within Codex's 1 s
+/// rounding, so a window started during the check is accepted only if it started within the
+/// first reply time + 2 s before the second request: about the same as the unavoidable gap
+/// between that request and sending the start prompt. Anything else is unclear: nothing is sent.
+fn moved(first: &Snapshot, second: &Snapshot) -> Result<bool, String> {
+    let (Some(r1), Some(r2)) = (first.resets_at, second.resets_at) else {
+        return Err("Codex stopped reporting its 5h limit reset; nothing sent".into());
+    };
+    if (r2 - r1).abs() <= 1 {
+        return Ok(false);
+    }
+    let slow = |s: &Snapshot| s.replied_ms - s.sent_ms > MAX_REPLY_MS;
+    if slow(first) || slow(second) {
+        return Err("Codex answered too slowly to check its 5h limit; nothing sent".into());
+    }
+    let earliest = second.sent_ms - first.replied_ms - 1000;
+    let latest = second.replied_ms - first.sent_ms + 1000;
+    if (earliest..=latest).contains(&((r2 - r1) * 1000)) {
+        Ok(true)
+    } else {
+        Err(format!(
+            "Codex 5h limit reset changed during the check ({r1} -> {r2}); nothing sent"
+        ))
+    }
 }
 
 fn pick_model(list: &Value) -> Result<String, String> {
@@ -151,7 +268,174 @@ mod tests {
     fn parses_real_rate_limit_response() {
         // Captured from codex-cli 0.159.1 (trimmed).
         let r: Value = serde_json::from_str(r#"{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":1790801242},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1791197709},"planType":"plus"}}"#).unwrap();
-        assert_eq!(parse_rate_limits(&r).unwrap(), Some(1790801242));
+        assert_eq!(parse_rate_limits(&r).unwrap(), (Some(1790801242), Some(0)));
+    }
+
+    #[test]
+    fn only_a_placeholder_candidate_looks_inactive() {
+        // Live placeholder (2026-10-01): read sent at 1790860348 reported resetsAt 1790878349, 0% used.
+        let (before, after) = (1_790_860_346, 1_790_860_350);
+        assert_eq!(
+            looks_inactive(1_790_878_349, Some(0), before, after),
+            Ok(true)
+        );
+        // Started 5 minutes ago: running, even with 0% used.
+        assert_eq!(
+            looks_inactive(before + WINDOW_SECS - 300, Some(0), before, after),
+            Ok(false)
+        );
+        // Fresh-looking but already used: running.
+        assert_eq!(
+            looks_inactive(before + WINDOW_SECS, Some(1), before, after),
+            Ok(false)
+        );
+        assert_eq!(
+            looks_inactive(before + WINDOW_SECS, None, before, after),
+            Ok(false)
+        );
+        // Expired or too far away: not a state Codex reports; stop rather than send.
+        assert!(looks_inactive(after - 60, Some(0), before, after).is_err());
+        assert!(looks_inactive(after + 2 * WINDOW_SECS, Some(0), before, after).is_err());
+    }
+
+    /// A read sent at `sent` (Unix s) answered `reply_ms` later, reporting `reset` at 0% used.
+    fn snap(reset: i64, sent: i64, reply_ms: i64) -> Snapshot {
+        Snapshot {
+            resets_at: Some(reset),
+            used: Some(0),
+            sent_ms: sent * 1000,
+            replied_ms: sent * 1000 + reply_ms,
+        }
+    }
+
+    /// Codex's placeholder for a reply at `at_ms`: reply time + 5h, rounded either way.
+    fn placeholder(at_ms: i64, round_up: bool) -> i64 {
+        (at_ms + if round_up { 999 } else { 0 }) / 1000 + WINDOW_SECS
+    }
+
+    const T: i64 = 1_000_000;
+
+    #[test]
+    fn recently_started_limit_is_not_started_again() {
+        // Started 30 s before the check with 0% used: passes the first look...
+        let reset = T + WINDOW_SECS - 30;
+        let (first, second) = (snap(reset, T, 600), snap(reset, T + 11, 600));
+        assert_eq!(first.looks_inactive(reset), Ok(true));
+        // ...but its reset is fixed across the recheck, so it is running.
+        assert_eq!(moved(&first, &second), Ok(false));
+        assert_eq!(moved(&first, &snap(reset + 1, T + 11, 600)), Ok(false)); // rounding
+        // Fixed stays "running" even when replies are slow.
+        assert_eq!(
+            moved(&snap(reset, T, 40_000), &snap(reset, T + 50, 40_000)),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn usage_starting_between_reads_is_not_mistaken_for_the_placeholder() {
+        // Fast replies (0.6 s): idle at the first read, another client starts a window 5 s (or
+        // 3 s) before the second request; its reset is then fixed at that start + 5h.
+        let first = snap(placeholder(T * 1000 + 600, true), T, 600);
+        for before_second in [5, 3] {
+            let start = T + 11 - before_second;
+            let second = snap(start + WINDOW_SECS, T + 11, 600);
+            assert!(moved(&first, &second).is_err(), "{before_second}");
+        }
+        // Slow replies (40 s, the review's case): unclear, nothing sent.
+        let first = snap(T + WINDOW_SECS + 1, T, 40_000);
+        let second = snap(T + 20 + WINDOW_SECS, T + 50, 40_000);
+        assert!(moved(&first, &second).is_err());
+        // Just over the reply limit, even with a perfectly moving reset: unclear.
+        let first = snap(placeholder(T * 1000, false), T, MAX_REPLY_MS + 1);
+        let second = snap(placeholder((T + 12) * 1000, false), T + 12, 600);
+        assert!(moved(&first, &second).is_err());
+    }
+
+    #[test]
+    fn moving_placeholder_is_inactive() {
+        // Whenever Codex answered within each reply time and however it rounded: moved.
+        for reply_ms in [300, 1200, MAX_REPLY_MS] {
+            let second_sent = T + 10 + reply_ms / 1000 + 1;
+            for (a, b) in [(0, 0), (reply_ms, reply_ms), (0, reply_ms), (reply_ms, 0)] {
+                for round_up in [false, true] {
+                    let first = snap(placeholder(T * 1000 + a, round_up), T, reply_ms);
+                    let r2 = placeholder(second_sent * 1000 + b, round_up);
+                    let second = snap(r2, second_sent, reply_ms);
+                    assert_eq!(second.looks_inactive(r2), Ok(true));
+                    assert_eq!(moved(&first, &second), Ok(true), "{reply_ms} {a} {b}");
+                }
+            }
+        }
+        // Live placeholder reads 2026-10-01, sent at 1790860348 and 1790861549.
+        let live = moved(
+            &snap(1_790_878_349, 1_790_860_348, 700),
+            &snap(1_790_879_550, 1_790_861_549, 700),
+        );
+        assert_eq!(live, Ok(true));
+        // Backwards or too far: unclear, nothing sent.
+        assert!(moved(&snap(T, T, 600), &snap(T - 10, T + 11, 600)).is_err());
+        assert!(moved(&snap(T, T, 600), &snap(T + 100, T + 11, 600)).is_err());
+    }
+
+    /// Seconds the fake app-server holds back its `model/list` reply.
+    const MODEL_DELAY_MS: i64 = 3000;
+
+    /// Not a real test: a fake `codex app-server` that `read_from` talks to, run as a child of the
+    /// test binary. Status (a moving placeholder) replies at once; `model/list` only after a delay.
+    #[test]
+    #[ignore]
+    fn fake_app_server() {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            return;
+        }
+        println!(); // end libtest's "test ... " line so replies start on their own lines
+        for line in std::io::stdin().lines().map_while(Result::ok) {
+            let msg: Value = serde_json::from_str(&line).unwrap();
+            let reply = match msg["id"].as_i64() {
+                Some(1) => json!({"id":1,"result":{}}),
+                Some(2) => {
+                    let reset = now_ms() / 1000 + WINDOW_SECS + 1;
+                    json!({"id":2,"result":{"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":reset}}}})
+                }
+                Some(3) => {
+                    std::thread::sleep(Duration::from_millis(MODEL_DELAY_MS as u64));
+                    json!({"id":3,"result":{"data":[{"id":"gpt-6-luna"}]}})
+                }
+                _ => continue,
+            };
+            println!("{reply}");
+        }
+    }
+
+    fn fake_session() -> Session {
+        let args = [
+            "providers::codex::tests::fake_app_server",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ];
+        Session::spawn(
+            &std::env::current_exe().unwrap(),
+            &args,
+            Duration::from_secs(30),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn confirming_read_does_not_wait_for_models() {
+        // A slow model list after the status reply leaves time for another client to start a
+        // window, so a read that waits for it returns a stale status.
+        let (snap, models) = read_from(&mut fake_session(), true).unwrap();
+        assert_eq!(pick_model(&models).unwrap(), "gpt-6-luna");
+        assert!(now_ms() - snap.replied_ms >= MODEL_DELAY_MS);
+        // The confirming read skips the model list: its status is fresh the moment it returns.
+        let (snap, models) = read_from(&mut fake_session(), false).unwrap();
+        assert!(snap.looks_inactive(snap.resets_at.unwrap()).unwrap());
+        assert_eq!(models, Value::Null);
+        assert!(now_ms() - snap.replied_ms < 1000);
     }
 
     #[test]
@@ -159,9 +443,9 @@ mod tests {
         let weekly_only = json!({"rateLimits":{"primary":{"usedPercent":5,"windowDurationMins":10080,"resetsAt":9},"secondary":null}});
         assert!(parse_rate_limits(&weekly_only).is_err());
         let swapped = json!({"rateLimits":{"primary":{"windowDurationMins":10080,"resetsAt":9},"secondary":{"windowDurationMins":300,"resetsAt":7}}});
-        assert_eq!(parse_rate_limits(&swapped).unwrap(), Some(7));
+        assert_eq!(parse_rate_limits(&swapped).unwrap().0, Some(7));
         let no_reset = json!({"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300}}});
-        assert_eq!(parse_rate_limits(&no_reset).unwrap(), None);
+        assert_eq!(parse_rate_limits(&no_reset).unwrap().0, None);
     }
 
     #[test]

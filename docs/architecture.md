@@ -33,18 +33,26 @@ kills the whole process tree when the call finishes or times out. No provider pr
 call.
 
 **Codex.** `codex app-server` over stdio: `initialize`, then `account/rateLimits/read` (5-hour
-and weekly windows with `resetsAt`) and `model/list`. If the 5-hour window did not start just
-now, one was already running: done, nothing sent. Otherwise one ephemeral
-`codex exec` with the cheapest listed model at low effort ensures the window is anchored,
-then limits are re-read. Observations (2026-09) suggest the rate-limit read may itself start the
-window, so ClankShift never reads Codex status casually, only when an anchor is due.
+and weekly windows with `resetsAt`) and `model/list`. With no window running, Codex reports a
+placeholder: 0% used and `resetsAt` = read time + 5h, moving with each read (live-tested
+2026-10-01; reading does not start a window), whereas a running window's reset stays fixed. An
+earlier reset or any usage means a window is already running: nothing is sent. A reset that
+looks like the placeholder (within a minute of clock skew) is read again 10 s later, status
+only: the model is chosen from the first read, so nothing slow sits between this read and the
+request. Only if the reset moved by the time between the two status replies (measured from
+request to reply, within Codex's 1 s rounding) does one ephemeral `codex exec` with the cheapest
+listed model at low effort follow, then limits are re-read. A fixed reset means a just-started window: nothing is sent. A
+reply slower than 2 s, an expired reset, one more than 5h away, or any other change (such as a
+window started during the check) fails without sending.
+ClankShift still reads Codex status only when an anchor is due.
 
 **Claude.** There is no documented quota-free status. `claude -p ... --output-format stream-json`
 emits a `rate_limit_event` with the authoritative 5-hour `resetsAt`, so the anchor request is also
 the status check. It is skipped while a previously reported window is still running.
 
-**Window classification** (`schedule.rs`): a reported reset time within 10 minutes of
-`now + 5h` means the window started with this call; anything earlier means it was already running.
+**Window classification** (`schedule.rs`, descriptive only): after a request was sent, a reported
+reset time within 10 minutes of `now + 5h` means the window started with this call; anything
+earlier means it was already running. It never decides whether to send.
 
 ## Terminology
 
