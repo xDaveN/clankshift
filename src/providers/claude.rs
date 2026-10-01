@@ -578,6 +578,19 @@ mod tests {
         if arg("error") {
             println!(r#"{{"type":"result","is_error":true,"result":"request failed"}}"#);
         }
+        if arg("flood") {
+            // Ordinary lines past the output budget.
+            let line = format!(
+                "{}
+",
+                serde_json::json!({"type":"assistant","text":"x".repeat(1000)})
+            );
+            for _ in 0..5 << 10 {
+                if std::io::Write::write_all(&mut std::io::stdout(), line.as_bytes()).is_err() {
+                    return;
+                }
+            }
+        }
         if arg("hang") {
             std::thread::sleep(Duration::from_secs(60));
         }
@@ -617,6 +630,54 @@ mod tests {
             assert!(st.resets_at.is_some_and(fresh), "{script:?}: {st:?}");
             assert!(st.last_error.is_none() && !retry, "{script:?}");
         }
+    }
+
+    #[test]
+    fn output_over_budget_is_possibly_sent() {
+        // A reset reported before the flood is what Claude said: kept, nothing retried.
+        let (st, retry) = finish_fake(&["reset", "flood"]);
+        assert!(
+            st.resets_at.is_some_and(|r| started_now(r, now())),
+            "{st:?}"
+        );
+        assert_eq!((st.last_error, retry), (None, false));
+        // Without one it is a failure that may have started a limit.
+        let (st, retry) = finish_fake(&["flood"]);
+        let e = st.last_error.unwrap_or_default();
+        assert!(
+            e.contains("output exceeded") && crate::providers::maybe_sent(&e),
+            "{e}"
+        );
+        assert!(st.resets_at.is_none() && !retry);
+    }
+
+    /// An endless `auth status` is an error before anything is sent, not parsed JSON.
+    #[cfg(windows)]
+    #[test]
+    fn oversized_auth_status_is_an_error() {
+        let root = std::env::temp_dir().join(format!("clankshift-big-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for (name, line) in [
+            ("long", "x"),
+            (
+                "lines", "{}
+",
+            ),
+        ] {
+            std::fs::write(root.join(name), line.repeat(5 << 20)).unwrap();
+            let fake = root.join(format!("{name}.cmd"));
+            std::fs::write(
+                &fake,
+                format!(
+                    "@type \"%~dp0{name}\"
+"
+                ),
+            )
+            .unwrap();
+            let e = check_subscription(&fake).unwrap_err();
+            assert_eq!(e, "output exceeded 4 MiB", "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
