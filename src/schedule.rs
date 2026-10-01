@@ -54,6 +54,23 @@ pub fn next_daily(after: Timestamp, t: Time, tz: &TimeZone) -> Timestamp {
     }
 }
 
+/// Latest occurrence of local time `t` after `after` and not after `now`, if any. After a multi-day
+/// sleep this is today's start, not the first missed one (which would then suppress today's).
+pub fn latest_daily(after: Timestamp, now: Timestamp, t: Time, tz: &TimeZone) -> Option<Timestamp> {
+    // The latest occurrence is always within two days of `now`; skip older ones.
+    let mut due = next_daily(after.max(now - 48.hours()), t, tz);
+    if due > now {
+        return None;
+    }
+    loop {
+        let next = next_daily(due, t, tz);
+        if next > now {
+            return Some(due);
+        }
+        due = next;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +128,29 @@ mod tests {
         assert_eq!(
             next_daily(ts("2026-07-01T06:00:00Z"), time(7, 0, 0, 0), &tz),
             ts("2026-07-02T06:00:00Z")
+        );
+    }
+
+    #[test]
+    fn latest_daily_after_multi_day_sleep() {
+        let tz = TimeZone::get("Europe/London").unwrap();
+        let t = time(7, 0, 0, 0);
+        // Last run Mon 07:00 BST; woke Thu 07:40 BST -> Thu 07:00 is due, not Tue 07:00.
+        let after = ts("2026-07-06T06:00:00Z");
+        let now = ts("2026-07-09T06:40:00Z");
+        assert_eq!(
+            latest_daily(after, now, t, &tz),
+            Some(ts("2026-07-09T06:00:00Z"))
+        );
+        // Woke Thu 06:40 BST -> Wed 07:00 is the latest due one (and then too late to run).
+        assert_eq!(
+            latest_daily(after, ts("2026-07-09T05:40:00Z"), t, &tz),
+            Some(ts("2026-07-08T06:00:00Z"))
+        );
+        // Nothing due since `after`.
+        assert_eq!(
+            latest_daily(after, ts("2026-07-07T05:59:59Z"), t, &tz),
+            None
         );
     }
 
