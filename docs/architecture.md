@@ -21,7 +21,7 @@ src/
 ## Idle model
 
 The tray process sleeps in the OS event loop (`winit`, `ControlFlow::WaitUntil`) until a menu
-click, a finished provider call, the next daily trigger, or a known window ending (to refresh the
+click, a finished provider call, the next daily trigger or retry, or a known window ending (to refresh the
 menu). Waits are capped at 10 minutes because OS wait timers pause during system sleep; a
 wake-up only compares timestamps. Measured on Windows 11 (release build): 0 ms CPU over
 90 s idle, about 20 MB working set, one thread.
@@ -59,6 +59,10 @@ Keep UI wording free of "window"/"anchor".
 - **Daily:** at a local time (DST-aware). If missed by more than an hour (asleep/off), it is skipped.
 
 All triggers do nothing for a provider whose window is known to be running.
+
+A failed automatic (start or daily) anchor is retried every 10 minutes, but only within an hour
+of the trigger; later than that the reset would land somewhere the user did not ask for, so it
+gives up. Retries are in memory only. Failed manual starts are not retried.
 
 ## What the tray shows
 

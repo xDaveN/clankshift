@@ -16,7 +16,7 @@ use winit::window::WindowId;
 
 use crate::config::Config;
 use crate::providers::{Outcome, Provider, now};
-use crate::schedule::{DAILY_GRACE_SECS, known_active, next_daily};
+use crate::schedule::{GRACE_SECS, known_active, next_daily, next_retry};
 use crate::state::{State, data_dir, log};
 use crate::{icon, platform};
 
@@ -47,6 +47,10 @@ struct App {
     /// Daily triggers before this moment are never run (app start, or last settings change).
     rules_since: i64,
     busy: [bool; 2],
+    /// Trigger time of the running operation, if it is an automatic start (retried on failure).
+    auto_since: [Option<i64>; 2],
+    /// Failed automatic start: (trigger time, next attempt).
+    retry: [Option<(i64, i64)>; 2],
     settings_open: bool,
     tray: Option<(TrayIcon, Items)>,
 }
@@ -67,6 +71,8 @@ pub fn run() -> Result<(), String> {
         state: State::load(),
         rules_since: now(),
         busy: [false; 2],
+        auto_since: [None; 2],
+        retry: [None; 2],
         settings_open: false,
         tray: None,
     };
@@ -133,12 +139,15 @@ impl App {
     }
 
     /// Start a window unless a call is running or the provider already reported an active window.
-    fn anchor(&mut self, p: Provider) {
+    /// `auto_since` is the trigger time for automatic starts, `None` for manual ones.
+    fn anchor(&mut self, p: Provider, auto_since: Option<i64>) {
         let i = idx(p);
         if self.busy[i] || known_active(p.state(&self.state).resets_at, now()) {
             return;
         }
         self.busy[i] = true;
+        self.auto_since[i] = auto_since;
+        self.retry[i] = None;
         let (cfg, proxy) = (p.config(&self.config).clone(), self.proxy.clone());
         std::thread::spawn(move || {
             let _ = proxy.send_event(UserEvent::Done(p, p.anchor(&cfg)));
@@ -149,7 +158,30 @@ impl App {
         log(&format!("automatic trigger: {why}"));
         for p in Provider::ALL {
             if p.config(&self.config).enabled {
-                self.anchor(p);
+                self.anchor(p, Some(now()));
+            }
+        }
+    }
+
+    fn check_retries(&mut self) {
+        let now = now();
+        for p in Provider::ALL {
+            let i = idx(p);
+            let Some((since, _)) = self.retry[i].filter(|&(_, at)| at <= now) else {
+                continue;
+            };
+            self.retry[i] = None;
+            if !self.config.auto_anchor || !p.config(&self.config).enabled {
+                continue;
+            }
+            if now - since > GRACE_SECS {
+                log(&format!(
+                    "{}: retry missed (computer asleep or off); skipped",
+                    p.name()
+                ));
+            } else {
+                log(&format!("{}: retrying automatic start", p.name()));
+                self.anchor(p, Some(since));
             }
         }
     }
@@ -175,7 +207,7 @@ impl App {
         }
         self.state.last_daily_run = Some(now);
         self.state.save();
-        if now - due.as_second() <= DAILY_GRACE_SECS {
+        if now - due.as_second() <= GRACE_SECS {
             self.anchor_enabled("daily time");
         } else {
             log("daily trigger missed (computer asleep or off); skipped");
@@ -183,7 +215,10 @@ impl App {
     }
 
     fn finish(&mut self, p: Provider, result: Result<(Outcome, Option<i64>), String>) {
-        self.busy[idx(p)] = false;
+        let i = idx(p);
+        self.busy[i] = false;
+        let auto_since = self.auto_since[i].take();
+        let failed = result.is_err();
         let st = p.state_mut(&mut self.state);
         match result {
             Ok((outcome, resets_at)) => {
@@ -204,6 +239,21 @@ impl App {
             Err(e) => {
                 log(&format!("{}: error: {e}", p.name()));
                 st.last_error = Some(e);
+            }
+        }
+        if let Some(since) = auto_since.filter(|_| failed) {
+            let now = now();
+            self.retry[i] = next_retry(since, now).map(|at| (since, at));
+            match self.retry[i] {
+                Some((_, at)) => log(&format!(
+                    "{}: will retry at {}",
+                    p.name(),
+                    fmt_time(at, now)
+                )),
+                None => log(&format!(
+                    "{}: automatic start gave up after 1 hour",
+                    p.name()
+                )),
             }
         }
         self.state.save();
@@ -236,7 +286,10 @@ impl App {
         } else if self.busy[idx(p)] {
             "checking…".to_string()
         } else if let Some(e) = &st.last_error {
-            format!("problem: {}", truncate(e, 60))
+            let retry = self.retry[idx(p)].map_or(String::new(), |(_, at)| {
+                format!(" (trying again at {})", fmt_time(at, now))
+            });
+            format!("problem: {}{retry}", truncate(e, 60))
         } else {
             match st.resets_at {
                 Some(r) if r > now && st.started_by_us => {
@@ -285,13 +338,17 @@ impl App {
         let _ = tray.set_tooltip(Some(truncate_chars(&tooltip, 127)));
     }
 
-    /// Earliest moment something can change: the daily trigger, or a known window ending.
+    /// Earliest moment something can change: the daily trigger, a retry, or a known window ending.
     fn next_wake(&self) -> Instant {
         let now = now();
         let mut at = self.next_daily().map(|t| t.as_second());
         for p in Provider::ALL {
-            if let Some(r) = p.state(&self.state).resets_at.filter(|&r| r > now) {
-                at = Some(at.map_or(r, |a| a.min(r)));
+            let reset = p.state(&self.state).resets_at.filter(|&r| r > now);
+            for t in [reset, self.retry[idx(p)].map(|(_, at)| at)]
+                .into_iter()
+                .flatten()
+            {
+                at = Some(at.map_or(t, |a| a.min(t)));
             }
         }
         let wait = at.map_or(MAX_SLEEP, |a| {
@@ -316,6 +373,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.refresh_menu();
             }
             StartCause::ResumeTimeReached { .. } => {
+                self.check_retries();
                 self.check_daily();
                 self.refresh_menu();
             }
@@ -354,7 +412,7 @@ impl ApplicationHandler<UserEvent> for App {
                     .find(|&p| id == items.start[idx(p)].id())
                 {
                     log(&format!("{}: manual start", p.name()));
-                    self.anchor(p);
+                    self.anchor(p, None);
                 }
             }
         }
