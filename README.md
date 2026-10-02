@@ -70,6 +70,9 @@ Settings are in `%APPDATA%\ClankShift\config.toml`; state and log in `%LOCALAPPD
 - A daily start missed by more than an hour (PC asleep) is skipped. One that passes while
   ClankShift is closed is not made up later; *Start on launch* covers that case.
 - A failed automatic start is retried every 10 minutes for up to an hour.
+- If a Claude start may have reached Claude without a usable answer (or ClankShift closed
+  during it), automatic Claude starts wait about 5¼ hours, until a 5h limit it may have started
+  has passed.
 - Claude may occasionally get a request while a 5h limit is already running (if you used it
   elsewhere in the meantime). Costs next to nothing.
 

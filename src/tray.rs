@@ -150,10 +150,23 @@ impl App {
         }
         if auto_since.is_some() && p.state(&self.state).auto_paused(now()) {
             log(&format!(
-                "{}: automatic start skipped, saved state unreadable",
+                "{}: automatic start skipped, 5h limit state uncertain",
                 p.name()
             ));
             return;
+        }
+        if p.sends_unchecked() {
+            // Only the reply tells whether the request started a 5h limit, and nothing bounds
+            // when it goes out while its process runs: until the result is recorded, neither
+            // another trigger nor a restart may send automatically.
+            p.state_mut(&mut self.state).request_pending = true;
+            if !self.state.save() {
+                // Nothing was sent: finish it as a failure before the request, so an automatic
+                // start is retried from its original trigger like any other.
+                self.auto_since[i] = auto_since;
+                self.finish(p, Err("could not save state; nothing sent".into()));
+                return;
+            }
         }
         self.busy[i] = true;
         self.auto_since[i] = auto_since;
@@ -444,12 +457,14 @@ impl ApplicationHandler<UserEvent> for App {
 }
 
 /// Record a finished start in the provider's state. True if it failed before anything could
-/// reach the provider, so an automatic start may be retried.
+/// reach the provider, so an automatic start may be retried. `now` is after the operation's
+/// processes ended, so a request it launched reached the provider, if at all, before then.
 pub(crate) fn apply(
     st: &mut ProviderState,
     result: Result<(Outcome, Option<i64>), String>,
     now: i64,
 ) -> bool {
+    st.request_pending = false;
     match result {
         Ok((_, resets_at)) => {
             st.resets_at = resets_at;
@@ -460,6 +475,9 @@ pub(crate) fn apply(
         }
         Err(e) => {
             let retryable = !maybe_sent(&e);
+            if !retryable {
+                st.sent_by(now);
+            }
             st.last_error = Some(e);
             retryable
         }
