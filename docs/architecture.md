@@ -87,10 +87,11 @@ All triggers do nothing for a provider whose window is known to be running.
 one complete file, never a truncated or mixed one. A missing `state.json` is a first run. One that
 exists but cannot be read may have held a window whose reset is as late as the parsers accept for an
 observation made by its last modification: 5h + 11 min (Claude's 10 min rounding and 1 min clock
-skew; Codex's bound is smaller). Until then, both providers are marked unknown in the state (saved
-like any other state), and automatic starts are skipped. Manual starts still work, and a provider's
-next report clears its mark, so a manually observed window survives a restart while the other
-provider stays unknown.
+skew; Codex's bound is smaller). For Claude it may also have held a pending request (below), which
+may have gone out until this start, so Claude counts the 5h + 11 min from now. Until then, the
+providers are marked unknown in the state (saved like any other state), and automatic starts are
+skipped. Manual starts still work, and a provider's next report clears its mark, so a manually
+observed window survives a restart while the other provider stays unknown.
 
 A failed automatic (start or daily) anchor is retried every 10 minutes, but only within an hour
 of the trigger; later than that the reset would land somewhere the user did not ask for, so it
@@ -100,6 +101,16 @@ have started the 5h limit, and repeating it would only spend quota. Codex retrie
 every Codex start is preceded by fresh status reads. A usable 5h reset Claude reports is kept even
 if the request then fails or its output breaks off (timeout); a missing or malformed reset never
 hides such a failure.
+
+Only the reply tells whether a Claude request started a window, and nothing bounds when it goes out
+while its process runs: the PC can sleep during the sign-in check or the request, and process
+timeouts may not count wall-clock time across sleep. So before launching, the tray saves the request
+as pending (nothing is sent if that save fails), and automatic Claude starts wait while it is
+pending. When the operation ends, its processes have ended too, so a request went out, if at all,
+before that moment: a report clears the mark, a failure known to precede the request just drops it,
+and a possibly-sent failure marks Claude unknown until 5h + 11 min after it. A pending mark left by
+a crash, Quit or failed save is resolved the same way at the next start: only one ClankShift runs,
+and its request processes die with it (job object), so the previous request went out before then.
 
 ## What the tray shows
 

@@ -60,6 +60,12 @@ impl Provider {
         }
     }
 
+    /// True if the request is sent without a status check first (Claude), so only its reply
+    /// tells whether it started a 5h limit.
+    pub fn sends_unchecked(self) -> bool {
+        self == Provider::Claude
+    }
+
     /// Blocking (seconds to a minute); run on a worker thread.
     pub fn anchor(self, cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
         match self {
