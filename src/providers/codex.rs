@@ -98,8 +98,11 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, i64), String> {
     let program = resolve(&cfg.command, "codex")?;
     let pick = cfg.model.trim().is_empty();
     let (first, models) = read(&program, pick)?;
-    if !first.looks_inactive() {
+    if first.running() {
         return Ok((Outcome::AlreadyActive, first.resets_at));
+    }
+    if !first.looks_inactive() {
+        return Err("Codex reported unclear 5h limit usage; nothing sent".into());
     }
     first.check_included()?;
     // Chosen before the confirming read: nothing slow may sit between it and the request.
@@ -111,8 +114,11 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, i64), String> {
     // The placeholder, or a window started within the last minute or so: only the placeholder moves.
     std::thread::sleep(Duration::from_secs(RECHECK_SECS));
     let (second, _) = read(&program, false)?;
-    if !second.looks_inactive() || !moved(&first, &second)? {
+    if second.running() || !moved(&first, &second)? {
         return Ok((Outcome::AlreadyActive, second.resets_at));
+    }
+    if !second.looks_inactive() {
+        return Err("Codex reported unclear 5h limit usage; nothing sent".into());
     }
     second.check_included()?;
     exec(&program, &model)?;

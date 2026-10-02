@@ -298,7 +298,7 @@ fn keep_starting_picker(ui: &mut egui::Ui, value: &mut KeepStarting) {
             }
         });
     if let KeepStarting::For(n) = value {
-        ui.add(egui::DragValue::new(n).prefix("× "));
+        ui.add(egui::DragValue::new(n).range(1..=u32::MAX).prefix("× "));
     }
 }
 
