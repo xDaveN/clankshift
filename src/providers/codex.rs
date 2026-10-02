@@ -62,19 +62,22 @@ impl Snapshot {
         (self.sent_ms / 1000, (self.replied_ms + 999) / 1000)
     }
 
-    /// `looks_inactive` for this read.
-    fn looks_inactive(&self) -> Result<bool, String> {
-        let (before, after) = self.seconds();
-        looks_inactive(self.resets_at, self.used, before, after)
+    /// Could this read be the "not running" placeholder? Live-tested 2026-10-01 (codex-cli
+    /// 0.159.3, no Codex use for the window's lifetime): two reads 20 min apart both reported
+    /// usedPercent 0 and resetsAt = read time + 5h, i.e. the placeholder moves with the clock and
+    /// reading does not start a window. A running window resets earlier than that; anything else
+    /// fails `new`. A window started within the clock-skew allowance also passes; `moved` settles it.
+    fn looks_inactive(&self) -> bool {
+        let (before, _) = self.seconds();
+        self.used == Some(0) && self.resets_at >= before + WINDOW_SECS - CLOCK_SKEW_SECS
     }
 
     /// Does this read alone show a running 5h limit: usage, or a reset earlier than the
     /// placeholder's? Not simply `!looks_inactive`, which also refuses unknown or malformed usage.
-    fn running(&self) -> Result<bool, String> {
-        let (before, after) = self.seconds();
-        check_reset(self.resets_at, after)?;
+    fn running(&self) -> bool {
+        let (before, _) = self.seconds();
         let earlier = self.resets_at < before + WINDOW_SECS - CLOCK_SKEW_SECS;
-        Ok(earlier || self.used.is_some_and(|u| u > 0))
+        earlier || self.used.is_some_and(|u| u > 0)
     }
 
     /// Only `true` counts: false (e.g. weekly limit reached) or unknown could mean paid credits.
@@ -91,12 +94,12 @@ impl Snapshot {
 /// and if none are listed by `model/list` the account's default model is used at low effort.
 const CHEAP_MODELS: &[&str] = &["gpt-6-luna", "gpt-5.6-luna"];
 
-pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
+pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, i64), String> {
     let program = resolve(&cfg.command, "codex")?;
     let pick = cfg.model.trim().is_empty();
     let (first, models) = read(&program, pick)?;
-    if !first.looks_inactive()? {
-        return Ok((Outcome::AlreadyActive, Some(first.resets_at)));
+    if !first.looks_inactive() {
+        return Ok((Outcome::AlreadyActive, first.resets_at));
     }
     first.check_included()?;
     // Chosen before the confirming read: nothing slow may sit between it and the request.
@@ -108,8 +111,8 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     // The placeholder, or a window started within the last minute or so: only the placeholder moves.
     std::thread::sleep(Duration::from_secs(RECHECK_SECS));
     let (second, _) = read(&program, false)?;
-    if !second.looks_inactive()? || !moved(&first, &second)? {
-        return Ok((Outcome::AlreadyActive, Some(second.resets_at)));
+    if !second.looks_inactive() || !moved(&first, &second)? {
+        return Ok((Outcome::AlreadyActive, second.resets_at));
     }
     second.check_included()?;
     exec(&program, &model)?;
@@ -121,7 +124,7 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     });
     // The request was sent: retrying could start another 5h limit or spend more.
     let resets_at = resets_at.map_err(|e| format!("{e} {MAYBE_SENT}"))?;
-    Ok((Outcome::Anchored, Some(resets_at)))
+    Ok((Outcome::Anchored, resets_at))
 }
 
 /// Reset of the 5h limit a completed start began, from the read `after` it. A just-started
@@ -131,11 +134,11 @@ fn confirm(
     after: &Snapshot,
     again: impl FnOnce() -> Result<Snapshot, String>,
 ) -> Result<i64, String> {
-    if after.running()? {
+    if after.running() {
         return Ok(after.resets_at);
     }
     let again = again()?;
-    if again.running()? || moved(after, &again) == Ok(false) {
+    if again.running() || moved(after, &again) == Ok(false) {
         return Ok(again.resets_at);
     }
     Err("Codex did not confirm that the 5h limit started".into())
@@ -261,21 +264,6 @@ fn check_reset(resets_at: i64, after: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Could the 5-hour window read between `before` and `after` be the "not running" placeholder?
-/// Live-tested 2026-10-01 (codex-cli 0.159.3, no Codex use for the window's lifetime): two reads
-/// 20 min apart both reported usedPercent 0 and resetsAt = read time + 5h, i.e. the placeholder
-/// moves with the clock and reading does not start a window. A running window resets earlier
-/// than that; anything else fails `check_reset`. A window started within the clock-skew allowance also passes; `moved` settles it.
-fn looks_inactive(
-    resets_at: i64,
-    used: Option<i64>,
-    before: i64,
-    after: i64,
-) -> Result<bool, String> {
-    check_reset(resets_at, after)?;
-    Ok(used == Some(0) && resets_at >= before + WINDOW_SECS - CLOCK_SKEW_SECS)
-}
-
 /// Did the reset move between two reads like the placeholder, which is reply time + 5h rounded to
 /// whole seconds, rather than stay fixed like a running window (live: 1790880307 at 15:45 and
 /// again at 15:48)? The move must fit the measured request-to-reply times within Codex's 1 s
@@ -335,6 +323,10 @@ mod tests {
 
     #[test]
     fn only_a_placeholder_candidate_looks_inactive() {
+        let looks_inactive = |reset, used: Option<i64>, before, after| {
+            let limits = json!({"rateLimits":{"primary":{"usedPercent":used,"windowDurationMins":300,"resetsAt":reset}}});
+            Snapshot::new(&limits, before * 1000, after * 1000).map(|s| s.looks_inactive())
+        };
         // Live placeholder (2026-10-01): read sent at 1790860348 reported resetsAt 1790878349, 0% used.
         let (before, after) = (1_790_860_346, 1_790_860_350);
         assert_eq!(
@@ -383,7 +375,7 @@ mod tests {
         // Started 30 s before the check with 0% used: passes the first look...
         let reset = T + WINDOW_SECS - 30;
         let (first, second) = (snap(reset, T, 600), snap(reset, T + 11, 600));
-        assert_eq!(first.looks_inactive(), Ok(true));
+        assert!(first.looks_inactive());
         // ...but its reset is fixed across the recheck, so it is running.
         assert_eq!(moved(&first, &second), Ok(false));
         assert_eq!(moved(&first, &snap(reset + 1, T + 11, 600)), Ok(false)); // rounding
@@ -424,7 +416,7 @@ mod tests {
                     let first = snap(placeholder(T * 1000 + a, round_up), T, reply_ms);
                     let r2 = placeholder(second_sent * 1000 + b, round_up);
                     let second = snap(r2, second_sent, reply_ms);
-                    assert_eq!(second.looks_inactive(), Ok(true));
+                    assert!(second.looks_inactive());
                     assert_eq!(moved(&first, &second), Ok(true), "{reply_ms} {a} {b}");
                 }
             }
@@ -496,7 +488,7 @@ mod tests {
         assert!(now_ms() - snap.replied_ms >= MODEL_DELAY_MS);
         // The confirming read skips the model list: its status is fresh the moment it returns.
         let (snap, models) = read_from(&mut fake_session(), false).unwrap();
-        assert!(snap.looks_inactive().unwrap());
+        assert!(snap.looks_inactive());
         assert_eq!(models, Value::Null);
         assert!(now_ms() - snap.replied_ms < 1000);
     }
@@ -563,7 +555,7 @@ mod tests {
         // Just started (fresh-looking, 0%): its reset stays fixed across the second read.
         let started = s3 - 5 + WINDOW_SECS;
         let after = snap(started, s3, 600);
-        assert_eq!(after.looks_inactive(), Ok(true));
+        assert!(after.looks_inactive());
         assert_eq!(confirm(&after, || Ok(snap(started, s4, 600))), Ok(started));
         // Still the moving placeholder: not reported as started.
         let after = snap(placeholder(s3 * 1000 + 600, true), s3, 600);

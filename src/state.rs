@@ -162,7 +162,7 @@ pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
 fn write_temp(path: &Path, contents: &str) -> std::io::Result<PathBuf> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    let mut name = path.file_name().unwrap().to_os_string();
     name.push(format!(".{}-{seq}.tmp", std::process::id()));
     let tmp = path.with_file_name(name);
     let mut f = std::fs::OpenOptions::new()
@@ -269,7 +269,7 @@ mod tests {
         }
         st
     }
-    type Result = std::result::Result<(Outcome, Option<i64>), String>;
+    type Result = std::result::Result<(Outcome, i64), String>;
     const MAYBE: &str = "stream ended (may have been sent; not retried)";
 
     #[test]
@@ -341,7 +341,7 @@ mod tests {
 
         // A usable report resolves it.
         let reset = t + WINDOW_SECS;
-        let report = Ok((Outcome::Anchored, Some(reset)));
+        let report = Ok((Outcome::Anchored, reset));
         let st = claude_request(&p, ProviderState::default(), Some((report, t + 60)));
         let st2 = State::load_from(&p, t + 60);
         for st in [&st, &st2] {
@@ -372,7 +372,7 @@ mod tests {
         let mut st = State::load_from(&p, t + 4 * 3600);
         // Manual Claude start at T+4h reports a reset at T+9h; the tray then saves.
         let reset = t + 9 * 3600;
-        let result = Ok((Outcome::Anchored, Some(reset)));
+        let result = Ok((Outcome::Anchored, reset));
         crate::tray::apply(&mut st.claude, result, t + 4 * 3600);
         st.save_to(&p).unwrap();
 

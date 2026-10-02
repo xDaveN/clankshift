@@ -44,7 +44,7 @@ const ROUNDING_SECS: i64 = 10 * 60;
 /// How far past a fresh 5h after the observation a reported reset may lie and still be accepted.
 pub const MAX_RESET_EXTRA_SECS: i64 = ROUNDING_SECS + CLOCK_SKEW_SECS;
 
-pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
+pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, i64), String> {
     check_custom_headers()?;
     let program = resolve(&cfg.command, "claude")?;
     check_subscription(&program)?;
@@ -87,14 +87,14 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
 }
 
 /// The request's result. From launch on it may have reached Claude, so a failure is not retried.
-fn reply(s: &mut Session, started: i64) -> Result<(Outcome, Option<i64>), String> {
+fn reply(s: &mut Session, started: i64) -> Result<(Outcome, i64), String> {
     let resets_at = read_reply(s, started).map_err(|e| format!("{e} {MAYBE_SENT}"))?;
     let outcome = if started_now(resets_at, started) {
         Outcome::Anchored
     } else {
         Outcome::AlreadyActive
     };
-    Ok((outcome, Some(resets_at)))
+    Ok((outcome, resets_at))
 }
 
 fn read_reply(s: &mut Session, started: i64) -> Result<i64, String> {
