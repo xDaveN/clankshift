@@ -71,7 +71,7 @@ pub fn run() -> Result<(), String> {
         proxy,
         config: Config::default(),
         config_error: None,
-        state: State::load(),
+        state: State::load(now()),
         rules_since: now(),
         busy: [false; 2],
         auto_since: [None; 2],
@@ -146,6 +146,13 @@ impl App {
     fn anchor(&mut self, p: Provider, auto_since: Option<i64>) {
         let i = idx(p);
         if self.busy[i] || known_active(p.state(&self.state).resets_at, now()) {
+            return;
+        }
+        if auto_since.is_some() && p.state(&self.state).auto_paused(now()) {
+            log(&format!(
+                "{}: automatic start skipped, saved state unreadable",
+                p.name()
+            ));
             return;
         }
         self.busy[i] = true;
@@ -443,6 +450,7 @@ pub(crate) fn apply(
             st.resets_at = resets_at;
             st.checked_at = Some(now);
             st.last_error = None;
+            st.unknown_until = None;
             false
         }
         Err(e) => {

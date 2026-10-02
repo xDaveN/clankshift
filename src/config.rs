@@ -49,6 +49,9 @@ impl Default for ProviderConfig {
 }
 
 pub fn config_dir() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join("clankshift-test");
+    }
     dirs::config_dir()
         .expect("no per-user config directory")
         .join("ClankShift")
@@ -71,7 +74,7 @@ impl Config {
     pub fn save(&self) -> Result<(), String> {
         let s = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(config_dir()).map_err(|e| e.to_string())?;
-        std::fs::write(path(), s).map_err(|e| format!("config.toml: {e}"))
+        crate::state::write_atomic(&path(), &s).map_err(|e| format!("config.toml: {e}"))
     }
 
     /// Parsed daily time, if set and valid.

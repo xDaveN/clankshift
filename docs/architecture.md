@@ -82,6 +82,16 @@ Keep UI wording free of "window"/"anchor".
 
 All triggers do nothing for a provider whose window is known to be running.
 
+`state.json` and `config.toml` are replaced atomically: each write creates its own new temp file
+(unique name), flushes it, then renames it over the original. A crash or a concurrent writer leaves
+one complete file, never a truncated or mixed one. A missing `state.json` is a first run. One that
+exists but cannot be read may have held a window whose reset is as late as the parsers accept for an
+observation made by its last modification: 5h + 11 min (Claude's 10 min rounding and 1 min clock
+skew; Codex's bound is smaller). Until then, both providers are marked unknown in the state (saved
+like any other state), and automatic starts are skipped. Manual starts still work, and a provider's
+next report clears its mark, so a manually observed window survives a restart while the other
+provider stays unknown.
+
 A failed automatic (start or daily) anchor is retried every 10 minutes, but only within an hour
 of the trigger; later than that the reset would land somewhere the user did not ask for, so it
 gives up. Retries are in memory only. Failed manual starts are not retried. A Claude failure after
