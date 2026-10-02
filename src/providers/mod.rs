@@ -126,8 +126,8 @@ impl From<SpawnError> for String {
 
 /// Stdout lines queued ahead of the reader; a noisier process then waits on its pipe.
 const QUEUED_LINES: usize = 64;
-/// Stdout bytes one operation may produce, its lines and everything a caller keeps of them
-/// included. Real replies are KBs (a Codex status read with models: 12 KB); more is an error.
+/// Stdout input bytes one operation may produce. Queued lines and parsed values can use more
+/// memory than this. Real replies are KBs (a Codex status read with models: 12 KB); more is an error.
 const STDOUT_LIMIT: u64 = 4 << 20;
 /// Stderr bytes kept: enough for `stderr_tail`, however much the process writes.
 const STDERR_KEPT: usize = 4096;
