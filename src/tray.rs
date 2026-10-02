@@ -329,7 +329,11 @@ impl App {
             items.start[i].set_text(format!("Start {} 5h limit", p.name()));
         }
         items.auto.set_checked(self.config.auto_anchor);
-        items.auto.set_enabled(self.config_error.is_none());
+        // Settings holds its own copy of the config and saves all of it, so the tray must not
+        // write the file while it is open.
+        items
+            .auto
+            .set_enabled(self.config_error.is_none() && !self.settings_open);
         items
             .auto
             .set_text(match (&self.config_error, self.next_daily()) {
@@ -410,8 +414,10 @@ impl ApplicationHandler<UserEvent> for App {
                     let _ = std::fs::create_dir_all(data_dir());
                     platform::open_folder(&data_dir());
                 } else if id == items.auto.id() {
-                    if toggle_auto(&mut self.config, &self.config_error)
-                        && let Err(e) = self.config.save()
+                    if toggle_auto(
+                        &mut self.config,
+                        self.config_error.is_some() || self.settings_open,
+                    ) && let Err(e) = self.config.save()
                     {
                         log(&e);
                     }
@@ -460,10 +466,11 @@ pub(crate) fn apply(
     }
 }
 
-/// Flip automatic starts; true if the change should be saved. With an unreadable config the
-/// in-memory defaults are only a stand-in, so nothing changes until Settings recovers the file.
-fn toggle_auto(config: &mut Config, config_error: &Option<String>) -> bool {
-    if config_error.is_some() {
+/// Flip automatic starts; true if the change should be saved. Blocked while the config is
+/// unreadable (the in-memory defaults are only a stand-in) or while Settings is open (its save
+/// would overwrite the change, or this save would overwrite Settings' before the tray reloads).
+fn toggle_auto(config: &mut Config, blocked: bool) -> bool {
+    if blocked {
         return false;
     }
     config.auto_anchor = !config.auto_anchor;
@@ -495,14 +502,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_error_blocks_auto_toggle() {
+    fn blocked_auto_toggle_changes_nothing() {
         let mut config = Config {
             auto_anchor: false,
             ..Config::default()
         };
-        assert!(!toggle_auto(&mut config, &Some("bad config".into())));
+        assert!(!toggle_auto(&mut config, true));
         assert!(!config.auto_anchor);
-        assert!(toggle_auto(&mut config, &None));
+        assert!(toggle_auto(&mut config, false));
         assert!(config.auto_anchor);
     }
 }
