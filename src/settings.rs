@@ -255,7 +255,7 @@ fn divider(ui: &mut egui::Ui) {
     ui.add_space(5.0);
 }
 
-/// Title (+ optional description) on the left, controls added right-to-left on the right.
+/// Title on the left, controls added right-to-left on the right.
 fn row(ui: &mut egui::Ui, title: &str, controls: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(
         vec2(ui.available_width(), 38.0),
