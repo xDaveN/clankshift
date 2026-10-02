@@ -28,6 +28,11 @@ they can follow.
 You need Windows 10/11 and the [Codex CLI](https://github.com/openai/codex) and/or
 [Claude Code](https://github.com/anthropics/claude-code), signed in with your subscription.
 
+**Claude requirement:** Claude support requires **Usage credits / extra usage** to be turned off in
+Claude's **Settings > Usage**. ClankShift cannot verify or enforce this setting, and cannot tell
+whether a request will use your included quota or paid credits. If it is on, scheduled requests
+may spend credits after your included quota runs out.
+
 Download `clankshift.exe` from [Releases](https://github.com/xDaveN/clankshift/releases), put it
 somewhere permanent and run it. To update, replace the file.
 
@@ -53,7 +58,8 @@ ClankShift only acts when no 5h limit is already running. Otherwise it stays qui
 no background processes, no network traffic.
 
 - **Codex:** reads the 5h limit from `codex app-server` (no quota used). If none is running,
-  sends one tiny request with the cheapest model.
+  sends one tiny request with the cheapest model only when Codex explicitly reports included
+  plan usage available. Unknown or unavailable included usage means nothing is sent.
 - **Claude:** there's no free way to check, so the start request *is* the check: a one-line
   Haiku prompt with tools, MCP and hooks off (~450 tokens).
 
@@ -74,7 +80,7 @@ Settings are in `%APPDATA%\ClankShift\config.toml`; state and log in `%LOCALAPPD
   during it), automatic Claude starts wait about 5¼ hours, until a 5h limit it may have started
   has passed.
 - Claude may occasionally get a request while a 5h limit is already running (if you used it
-  elsewhere in the meantime). Costs next to nothing.
+  elsewhere in the meantime). This uses a small amount of quota.
 
 ## Building
 

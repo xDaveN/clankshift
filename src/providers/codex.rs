@@ -5,8 +5,10 @@
 //! ClankShift still only reads at anchor time, never casually.
 //!
 //! Anchor: unless two spaced reads show the moving "not running" placeholder, a window was
-//! already running (or the state is unclear) and nothing is sent. Otherwise one ephemeral
-//! `codex exec` with the cheapest model at low effort anchors the window, then the state is re-read.
+//! already running (or the state is unclear) and nothing is sent. Nor is anything sent unless both
+//! reads report included usage allowed: otherwise the request could use paid credits. Otherwise
+//! one ephemeral `codex exec` with the cheapest model at low effort anchors the window, then the
+//! state is re-read.
 
 use std::time::Duration;
 
@@ -33,6 +35,8 @@ type Limit = (i64, Option<i64>);
 struct Snapshot {
     resets_at: i64,
     used: Option<i64>,
+    /// `ordinaryUsageAllowed`: Codex says a request would use the plan's included usage.
+    included: bool,
     sent_ms: i64,
     replied_ms: i64,
 }
@@ -45,6 +49,7 @@ impl Snapshot {
         let snapshot = Snapshot {
             resets_at,
             used,
+            included: limits["ordinaryUsageAllowed"] == true,
             sent_ms,
             replied_ms,
         };
@@ -62,6 +67,14 @@ impl Snapshot {
         let (before, after) = self.seconds();
         looks_inactive(self.resets_at, self.used, before, after)
     }
+
+    /// Only `true` counts: false (e.g. weekly limit reached) or unknown could mean paid credits.
+    fn check_included(&self) -> Result<(), String> {
+        if self.included {
+            return Ok(());
+        }
+        Err("Codex does not report included plan usage available; nothing sent".into())
+    }
 }
 
 /// Cheapest-first. Any request anchors the window, so the cheapest model available wins.
@@ -76,6 +89,7 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     if !first.looks_inactive()? {
         return Ok((Outcome::AlreadyActive, Some(first.resets_at)));
     }
+    first.check_included()?;
     // Chosen before the confirming read: nothing slow may sit between it and the request.
     let model = if pick {
         pick_model(&models)?
@@ -88,6 +102,7 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     if !second.looks_inactive()? || !moved(&first, &second)? {
         return Ok((Outcome::AlreadyActive, Some(second.resets_at)));
     }
+    second.check_included()?;
     exec(&program, &model)?;
     let (after, _) = read(&program, false)?;
     Ok((Outcome::Anchored, Some(after.resets_at)))
@@ -317,6 +332,7 @@ mod tests {
         Snapshot {
             resets_at: reset,
             used: Some(0),
+            included: true,
             sent_ms: sent * 1000,
             replied_ms: sent * 1000 + reply_ms,
         }
@@ -497,6 +513,30 @@ mod tests {
             s3 + WINDOW_SECS
         );
         assert!(read_after(s3 + 60).is_ok());
+    }
+
+    #[test]
+    fn only_explicitly_included_usage_allows_a_start() {
+        // Included usage unavailable (e.g. weekly limit reached) reads `false`: a start could use credits.
+        let read = |allowed: Option<Value>| {
+            let mut r = json!({"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":T + WINDOW_SECS}}});
+            if let Some(a) = allowed {
+                r["ordinaryUsageAllowed"] = a;
+            }
+            Snapshot::new(&r, T * 1000, T * 1000 + 600).unwrap()
+        };
+        assert_eq!(read(Some(json!(true))).check_included(), Ok(()));
+        for allowed in [
+            Some(json!(false)),
+            Some(json!(null)),
+            Some(json!("true")),
+            None,
+        ] {
+            assert!(
+                read(allowed.clone()).check_included().is_err(),
+                "{allowed:?}"
+            );
+        }
     }
 
     #[test]
