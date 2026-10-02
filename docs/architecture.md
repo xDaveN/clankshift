@@ -97,6 +97,18 @@ Keep UI wording free of "window"/"anchor".
 
 All triggers do nothing for a provider whose window is known to be running.
 
+**Keep starting** (`keep_starting`: off, `for = N`, or until stopped). A start or daily trigger
+begins a sequence per enabled provider. It first ends sequences that are over or were missed,
+then leaves an ongoing one entirely alone: no extra start, no new retry origin, no added count. A window already running counts as the first and is left alone. Each later reported
+window counts once (its reset must be later than the last one). The next start is due at the
+reported reset plus the provider's rounding (Claude 11 min, Codex 1 min), never a local 5h timer,
+and runs like an automatic start from that moment: same pause rules and retries within an hour.
+A start that fails without a retry, is skipped as uncertain, or is due more than an hour ago ends
+the sequence; missed windows are never made up. A finite sequence ends when its last window's next start would be due.
+The count is saved in `state.json` (`sequence`). Turning off automatic starts, keep starting or
+the provider ends it; a late result of a running start does not revive it. Manual starts never
+begin a sequence (a confirmed one counts toward an ongoing sequence).
+
 `state.json` and `config.toml` are replaced atomically: each write creates its own new temp file
 (unique name), flushes it, then renames it over the original. A crash or a concurrent writer leaves
 one complete file, never a truncated or mixed one. A missing `state.json` is a first run. One that

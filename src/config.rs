@@ -12,8 +12,19 @@ pub struct Config {
     pub anchor_on_start: bool,
     /// Local time of day for a daily anchor, "HH:MM". None = off.
     pub daily_at: Option<String>,
+    /// After an automatic start, keep starting the next 5h limit at each reported reset.
+    pub keep_starting: KeepStarting,
     pub codex: ProviderConfig,
     pub claude: ProviderConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeepStarting {
+    Off,
+    /// This many 5h limits in total, including one already running.
+    For(u32),
+    UntilStopped,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,6 +43,7 @@ impl Default for Config {
             auto_anchor: true,
             anchor_on_start: true,
             daily_at: None,
+            keep_starting: KeepStarting::Off,
             codex: ProviderConfig::default(),
             claude: ProviderConfig::default(),
         }

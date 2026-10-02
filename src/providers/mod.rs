@@ -66,6 +66,14 @@ impl Provider {
         self == Provider::Claude
     }
 
+    /// How long after a reported reset the 5h limit has surely ended: Claude rounds resets down.
+    pub fn reset_slack(self) -> i64 {
+        match self {
+            Provider::Codex => codex::CLOCK_SKEW_SECS,
+            Provider::Claude => claude::MAX_RESET_EXTRA_SECS,
+        }
+    }
+
     /// Blocking (seconds to a minute); run on a worker thread.
     pub fn anchor(self, cfg: &ProviderConfig) -> Result<(Outcome, i64), String> {
         match self {
