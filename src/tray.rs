@@ -89,6 +89,7 @@ fn idx(p: Provider) -> usize {
 
 impl App {
     fn reload_config(&mut self) {
+        let old = self.config.clone();
         match Config::load() {
             Ok(c) => (self.config, self.config_error) = (c, None),
             Err(e) => {
@@ -101,7 +102,18 @@ impl App {
                 self.config_error = Some(e);
             }
         }
+        if schedule_changed(&old, &self.config) {
+            self.cancel_retries();
+        }
         self.rules_since = now();
+    }
+
+    /// Retries belong to the automatic rules that triggered them: after those change, neither a
+    /// pending retry nor a still-running automatic start may retry. The running start still
+    /// records what the provider reports.
+    fn cancel_retries(&mut self) {
+        self.retry = [None; 2];
+        self.auto_since = [None; 2];
     }
 
     fn build_tray(&mut self) -> Result<(), String> {
@@ -430,9 +442,11 @@ impl ApplicationHandler<UserEvent> for App {
                     if toggle_auto(
                         &mut self.config,
                         self.config_error.is_some() || self.settings_open,
-                    ) && let Err(e) = self.config.save()
-                    {
-                        log(&e);
+                    ) {
+                        self.cancel_retries();
+                        if let Err(e) = self.config.save() {
+                            log(&e);
+                        }
                     }
                     self.rules_since = now();
                 } else if let Some(p) = Provider::ALL
@@ -495,6 +509,20 @@ fn toggle_auto(config: &mut Config, blocked: bool) -> bool {
     true
 }
 
+/// Did the settings that decide when automatic starts run change? CLI paths and models do not.
+fn schedule_changed(a: &Config, b: &Config) -> bool {
+    let rules = |c: &Config| {
+        (
+            c.auto_anchor,
+            c.anchor_on_start,
+            c.daily_time(),
+            c.codex.enabled,
+            c.claude.enabled,
+        )
+    };
+    rules(a) != rules(b)
+}
+
 fn fmt_time(epoch: i64, now: i64) -> String {
     let tz = TimeZone::system();
     let (Ok(t), Ok(n)) = (Timestamp::from_second(epoch), Timestamp::from_second(now)) else {
@@ -529,5 +557,28 @@ mod tests {
         assert!(!config.auto_anchor);
         assert!(toggle_auto(&mut config, false));
         assert!(config.auto_anchor);
+    }
+
+    #[test]
+    fn only_scheduling_edits_cancel_retries() {
+        let old = Config {
+            daily_at: Some("7:00".into()),
+            ..Config::default()
+        };
+        let changed = |edit: fn(&mut Config)| {
+            let mut new = old.clone();
+            edit(&mut new);
+            schedule_changed(&old, &new)
+        };
+        assert!(!changed(|_| {}));
+        assert!(!changed(|c| c.daily_at = Some("07:00".into())));
+        assert!(!changed(|c| c.claude.command = "claude.exe".into()));
+        assert!(!changed(|c| c.codex.model = "m".into()));
+        assert!(changed(|c| c.auto_anchor = false));
+        assert!(changed(|c| c.anchor_on_start = false));
+        assert!(changed(|c| c.daily_at = Some("08:00".into())));
+        assert!(changed(|c| c.daily_at = None));
+        assert!(changed(|c| c.codex.enabled = false));
+        assert!(changed(|c| c.claude.enabled = false));
     }
 }
