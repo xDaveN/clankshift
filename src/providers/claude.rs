@@ -11,6 +11,10 @@
 //! `claude auth status` reports claude.ai sign-in, and user/project settings are not loaded.
 //! `ANTHROPIC_CUSTOM_HEADERS` can carry an API key or bearer token that `auth status` does not
 //! see, so it must be unset in the environment and in Claude Code's global config.
+//!
+//! A subscription sign-in can still spend paid usage credits once included quota runs out. Claude
+//! Code offers no included-only mode and does not report the setting, so supported accounts must
+//! have usage credits / extra usage disabled (README); this cannot be verified or enforced here.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

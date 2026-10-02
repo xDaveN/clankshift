@@ -45,6 +45,10 @@ listed model at low effort follow, then limits are re-read. A fixed reset means 
 reply slower than 2 s, an expired reset, one more than 5h away, or any other change (such as a
 window started during the check) fails without sending.
 ClankShift still reads Codex status only when an anchor is due.
+Both pre-start reads must also report `ordinaryUsageAllowed: true`, the backend's permission for
+included plan usage. False, missing, null or malformed permission stops the start. A running
+window is still recorded without sending, and the post-start observation is not gated on this
+permission because the request has already completed.
 
 **Claude.** There is no documented quota-free status. `claude -p ... --output-format stream-json`
 emits a `rate_limit_event` with the authoritative 5-hour `resetsAt`, so the anchor request is also
@@ -61,6 +65,14 @@ re-derived path; `auth status` runs with the same `--setting-sources ""` as the 
 before `auth`), since user settings can relocate `CLAUDE_CONFIG_DIR`. Only that `env` entry is inspected. `CLAUDE_CONFIG_DIR` must be unset or absolute:
 Claude resolves a relative or empty value against its own working directory, so those are refused.
 Admin-managed policy is trusted.
+
+Subscription sign-in does not establish that included quota remains: Claude can use paid usage
+credits when the account has them enabled. There is no verified included-only request control in
+the supported CLI (`--max-budget-usd` caps estimated API spend, not overage), and `auth status`
+does not report the setting. Claude support therefore requires Usage credits / extra usage to be
+disabled in Claude Settings > Usage; the README states this requirement. The app cannot verify or
+enforce that account setting, so an account with credits enabled is unsupported and carries a
+billing risk. This is a documented requirement, not a programmatic no-overage guarantee.
 
 **Window classification** (`schedule.rs`, descriptive only): after a request was sent, a reported
 reset time within 10 minutes of `now + 5h` means the window started with this call; anything
