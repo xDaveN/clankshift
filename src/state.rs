@@ -32,6 +32,9 @@ pub struct ProviderState {
     /// recorded. Nothing bounds when it reaches Claude while its process runs (the PC may sleep at
     /// any point), so automatic starts wait for as long as this is set. Saved before launch.
     pub request_pending: bool,
+    /// 5h limits counted so far in an ongoing "keep starting" sequence (0 while its first start
+    /// runs). The next one is due when the last reported limit resets.
+    pub sequence: Option<u32>,
 }
 
 impl ProviderState {

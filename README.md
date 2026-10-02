@@ -46,14 +46,15 @@ Everything lives in the tray menu:
 - when each provider's 5h limit resets (also on hover)
 - **Start Codex / Claude 5h limit** right now
 - **Automatic starts** on/off
-- **Settings…** for providers, start on launch or daily at a set time, start with Windows,
-  and CLI paths
+- **Settings…** for providers, start on launch or daily at a set time, repeat, start with
+  Windows, and CLI paths
 - **Open logs** if something went wrong
 
 For a reset around 12:00, start at 07:00: turn on *Every day at 07:00*, or *On launch*
 plus *Start with Windows* if you usually log in around then.
-Another reset around 17:00 requires new usage around 12:00; ClankShift does not start again
-automatically at each reset.
+Another reset around 17:00 requires new usage around 12:00, or *Repeat*: after
+an automatic start, it starts the next 5h limit at each reset, for a set number of limits
+(counting one already running) or until stopped. The tray shows the progress.
 
 ## How it works
 
@@ -80,6 +81,10 @@ Settings are in `%APPDATA%\ClankShift\config.toml`; state and log in `%LOCALAPPD
   ClankShift is closed is not made up later; *Start on launch* covers that case.
 - A failed automatic start is retried every 10 minutes for up to an hour when safe to retry.
   A start that may already have been sent is not retried.
+- *Repeat* stops if a next start is missed by more than an hour or fails; it
+  never makes up missed 5h limits. Claude's next start waits about 11 minutes past the shown
+  reset, since Claude rounds reset times down. Turning automatic starts, *Repeat*, or a
+  provider off stops it; turning them back on waits for the next automatic start.
 - If a Claude start may have reached Claude without a usable answer (or ClankShift closed
   during it), automatic Claude starts wait about 5¼ hours, until a 5h limit it may have started
   has passed.

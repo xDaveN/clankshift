@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 
 use eframe::egui::{self, Align, Color32, FontFamily, FontId, Layout, RichText, Stroke, vec2};
 
-use crate::config::Config;
+use crate::config::{Config, KeepStarting};
 use crate::{icon, platform, state};
 
 struct Settings {
@@ -162,6 +162,12 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Every card row is this tall, whatever its controls. Rows are `ROW_GAP` apart (the item
+/// spacing) with the divider in the middle of the gap, and cards pad by half of it, so each row's
+/// band between hairlines or card edges is the same height.
+const ROW_HEIGHT: f32 = 44.0;
+const ROW_GAP: f32 = 6.0;
+
 fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("semibold".into()))
 }
@@ -176,7 +182,7 @@ fn apply_style(s: &mut egui::Style, p: &Palette) {
         (Monospace, FontId::monospace(13.0)),
     ]
     .into();
-    s.spacing.item_spacing = vec2(8.0, 6.0);
+    s.spacing.item_spacing = vec2(8.0, ROW_GAP);
     s.spacing.button_padding = vec2(12.0, 5.0);
     s.spacing.interact_size.y = 28.0;
     let v = &mut s.visuals;
@@ -239,7 +245,7 @@ fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         .fill(p.card)
         .stroke(Stroke::new(1.0, p.stroke))
         .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(16, 6))
+        .inner_margin(egui::Margin::symmetric(16, ROW_GAP as i8 / 2))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui);
@@ -249,32 +255,51 @@ fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 fn divider(ui: &mut egui::Ui) {
     let p = Palette::of(ui);
     let rect = ui.available_rect_before_wrap();
-    let y = ui.cursor().top() + 2.0;
+    // The cursor is one item spacing below the previous row.
+    let y = ui.cursor().top() - ROW_GAP / 2.0;
     let x = (rect.left() - 16.0)..=(rect.right() + 16.0);
     ui.painter().hline(x, y, Stroke::new(1.0, p.stroke));
-    ui.add_space(5.0);
 }
 
 /// Title on the left, controls added right-to-left on the right.
 fn row(ui: &mut egui::Ui, title: &str, controls: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), 38.0),
-        Layout::right_to_left(Align::Center),
-        |ui| {
-            controls(ui);
-            ui.add_space(12.0);
-            ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                ui.add_space(10.0);
-                ui.label(title);
-            });
-        },
-    );
+    let size = vec2(ui.available_width(), ROW_HEIGHT);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let layout = Layout::right_to_left(Align::Center);
+    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+    controls(&mut ui);
+    ui.add_space(12.0);
+    ui.with_layout(Layout::left_to_right(Align::Center), |ui| ui.label(title));
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(14.0);
     ui.label(RichText::new(title).font(semibold(14.0)));
     ui.add_space(2.0);
+}
+
+fn keep_starting_picker(ui: &mut egui::Ui, value: &mut KeepStarting) {
+    let text = |k: KeepStarting| match k {
+        KeepStarting::Off => "Off",
+        KeepStarting::For(_) => "Count",
+        KeepStarting::UntilStopped => "Until stopped",
+    };
+    // Right-to-left: the mode first, then its count.
+    egui::ComboBox::from_id_salt("keep_starting")
+        .width(120.0)
+        .selected_text(text(*value))
+        .show_ui(ui, |ui| {
+            let count = match *value {
+                KeepStarting::For(n) => KeepStarting::For(n),
+                _ => KeepStarting::For(3),
+            };
+            for k in [KeepStarting::Off, count, KeepStarting::UntilStopped] {
+                ui.selectable_value(value, k, text(k));
+            }
+        });
+    if let KeepStarting::For(n) = value {
+        ui.add(egui::DragValue::new(n).prefix("× "));
+    }
 }
 
 impl Settings {
@@ -407,8 +432,23 @@ impl eframe::App for Settings {
                                 ui.add_space(8.0);
                                 ui.add_enabled_ui(self.daily_on, |ui| self.time_picker(ui));
                             });
+                            divider(ui);
+                            row(ui, "Repeat", |ui| {
+                                keep_starting_picker(ui, &mut self.cfg.keep_starting);
+                            });
                         }
                     });
+                    if self.cfg.auto_anchor
+                        && matches!(self.cfg.keep_starting, KeepStarting::For(_))
+                    {
+                        ui.label(
+                            RichText::new(
+                                "Repeat counts the first 5h limit, including one already running.",
+                            )
+                            .small()
+                            .color(p.weak),
+                        );
+                    }
 
                     section(ui, "General");
                     card(ui, |ui| {

@@ -15,7 +15,7 @@ use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
-use crate::config::Config;
+use crate::config::{Config, KeepStarting};
 use crate::providers::{Outcome, Provider, is_not_found, maybe_sent, now};
 use crate::schedule::{
     GRACE_SECS, daily_trigger, known_active, latest_daily, next_daily, next_retry,
@@ -108,12 +108,37 @@ impl App {
         self.rules_since = now();
     }
 
+    /// Could a "keep starting" sequence run for `p` under the current settings?
+    fn keeps_starting(&self, p: Provider) -> bool {
+        self.config.auto_anchor
+            && p.config(&self.config).enabled
+            && self.config.keep_starting != KeepStarting::Off
+    }
+
+    /// Has a sequence that counted `n` 5h limits reached its count?
+    fn sequence_full(&self, n: u32) -> bool {
+        matches!(self.config.keep_starting, KeepStarting::For(max) if n >= max)
+    }
+
+    fn end_sequence(&mut self, p: Provider, why: &str) {
+        if p.state_mut(&mut self.state).sequence.take().is_some() {
+            log(&format!("{}: stopped starting 5h limits ({why})", p.name()));
+        }
+    }
+
     /// Retries belong to the automatic rules that triggered them: after those change, neither a
     /// pending retry nor a still-running automatic start may retry. The running start still
-    /// records what the provider reports.
+    /// records what the provider reports, but no longer counts for a sequence that ended here.
     fn cancel_retries(&mut self) {
         self.retry = [None; 2];
         self.auto_since = [None; 2];
+        for p in Provider::ALL {
+            // A first start belongs to its trigger; a sequence ends once it may no longer run.
+            if p.state(&self.state).sequence == Some(0) || !self.keeps_starting(p) {
+                self.end_sequence(p, "settings changed");
+            }
+        }
+        self.state.save();
     }
 
     fn build_tray(&mut self) -> Result<(), String> {
@@ -192,10 +217,68 @@ impl App {
     /// `since` is when the trigger was due; retries stay within `GRACE_SECS` of it.
     fn anchor_enabled(&mut self, why: &str, since: i64) {
         log(&format!("automatic trigger: {why}"));
+        // End sequences that are over or were missed (e.g. while closed) before the trigger.
+        self.check_sequences();
+        let now = now();
         for p in Provider::ALL {
-            if p.config(&self.config).enabled {
-                self.anchor(p, Some(since));
+            if !p.config(&self.config).enabled {
+                continue;
             }
+            let i = idx(p);
+            let st = p.state(&self.state);
+            // A sequence still present owns its starts, deadlines and retries, even a full one
+            // waiting out its last limit's reset slack: a trigger neither restarts it nor adds to
+            // its count. `check_sequences` alone decides when it has ended.
+            if st.sequence.is_some() {
+                continue;
+            }
+            let active = known_active(st.resets_at, now);
+            if self.keeps_starting(p) && !self.busy[i] {
+                log(&format!("{}: keep starting 5h limits", p.name()));
+                p.state_mut(&mut self.state).sequence = Some(active.into());
+            }
+            self.anchor(p, Some(since));
+            if p.state(&self.state).sequence == Some(0) && !self.busy[i] && self.retry[i].is_none()
+            {
+                self.end_sequence(p, "first start skipped");
+            }
+        }
+        self.state.save();
+    }
+
+    /// Start the next 5h limit of each ongoing sequence once the last one has surely ended
+    /// (its reported reset plus the provider's rounding), within the usual grace and retries.
+    /// A later one is never made up: the sequence ends instead.
+    fn check_sequences(&mut self) {
+        let now = now();
+        for p in Provider::ALL {
+            let i = idx(p);
+            let st = p.state(&self.state);
+            let Some(n) = st.sequence else { continue };
+            if !self.keeps_starting(p) {
+                // Turned off while ClankShift was closed.
+                self.end_sequence(p, "settings changed");
+                self.state.save();
+                continue;
+            }
+            let due = st.resets_at.map(|r| r + p.reset_slack());
+            if self.busy[i] || self.retry[i].is_some() || due.is_some_and(|d| d > now) {
+                continue;
+            }
+            let why = if self.sequence_full(n) {
+                "done"
+            } else if due.is_some_and(|d| now - d <= GRACE_SECS) {
+                log(&format!("{}: starting next 5h limit", p.name()));
+                self.anchor(p, due);
+                if self.busy[i] || self.retry[i].is_some() {
+                    continue;
+                }
+                "next start skipped"
+            } else {
+                "next start missed (computer asleep or off)"
+            };
+            self.end_sequence(p, why);
+            self.state.save();
         }
     }
 
@@ -212,6 +295,8 @@ impl App {
                     "{}: retry missed (computer asleep or off); skipped",
                     p.name()
                 ));
+                self.end_sequence(p, "retry missed");
+                self.state.save();
             } else {
                 log(&format!("{}: retrying automatic start", p.name()));
                 self.anchor(p, Some(since));
@@ -255,6 +340,10 @@ impl App {
         let i = idx(p);
         self.busy[i] = false;
         let auto_since = self.auto_since[i].take();
+        let (prev, reported) = (
+            p.state(&self.state).resets_at,
+            result.as_ref().ok().map(|&(_, r)| r),
+        );
         match &result {
             Ok((outcome, resets_at)) => {
                 let what = match outcome {
@@ -279,6 +368,17 @@ impl App {
                     "{}: automatic start gave up after 1 hour",
                     p.name()
                 )),
+            }
+        }
+        if let Some(n) = p.state(&self.state).sequence {
+            match reported {
+                // Each 5h limit counts once: a repeated report of the last one does not.
+                Some(r) if prev.is_none_or(|prev| r > prev) && !self.sequence_full(n) => {
+                    p.state_mut(&mut self.state).sequence = Some(n + 1);
+                }
+                Some(_) => {}
+                None if self.retry[i].is_none() => self.end_sequence(p, "start failed"),
+                None => {}
             }
         }
         self.state.save();
@@ -325,7 +425,12 @@ impl App {
                 None => "Not checked yet".to_string(),
             }
         };
-        format!("{} · {text}", p.name())
+        let progress = match (st.sequence, self.config.keep_starting) {
+            (Some(n @ 1..), KeepStarting::For(max)) => format!(" · {n} of {max}"),
+            (Some(1..), _) => " · repeating".to_string(),
+            _ => String::new(),
+        };
+        format!("{} · {text}{progress}", p.name())
     }
 
     fn refresh_menu(&self) {
@@ -370,10 +475,16 @@ impl App {
         let now = now();
         let mut at = self.next_daily().map(|t| t.as_second());
         for p in Provider::ALL {
-            let reset = p.state(&self.state).resets_at.filter(|&r| r > now);
-            for t in [reset, self.retry[idx(p)].map(|(_, at)| at)]
-                .into_iter()
-                .flatten()
+            let st = p.state(&self.state);
+            let reset = st.resets_at.filter(|&r| r > now);
+            let next = st.sequence.and(st.resets_at).map(|r| r + p.reset_slack());
+            for t in [
+                reset,
+                next.filter(|&t| t > now),
+                self.retry[idx(p)].map(|(_, at)| at),
+            ]
+            .into_iter()
+            .flatten()
             {
                 at = Some(at.map_or(t, |a| a.min(t)));
             }
@@ -402,11 +513,13 @@ impl ApplicationHandler<UserEvent> for App {
                 if self.config.auto_anchor && self.config.anchor_on_start {
                     self.anchor_enabled("ClankShift started", now());
                 }
+                self.check_sequences();
                 self.refresh_menu();
             }
             StartCause::ResumeTimeReached { .. } => {
                 self.check_retries();
                 self.check_daily();
+                self.check_sequences();
                 self.refresh_menu();
             }
             _ => {}
@@ -527,6 +640,7 @@ fn schedule_changed(a: &Config, b: &Config) -> bool {
             c.auto_anchor,
             c.anchor_on_start,
             c.daily_time(),
+            c.keep_starting,
             c.codex.enabled,
             c.claude.enabled,
         )
@@ -602,6 +716,7 @@ mod tests {
         assert!(changed(|c| c.anchor_on_start = false));
         assert!(changed(|c| c.daily_at = Some("08:00".into())));
         assert!(changed(|c| c.daily_at = None));
+        assert!(changed(|c| c.keep_starting = KeepStarting::UntilStopped));
         assert!(changed(|c| c.codex.enabled = false));
         assert!(changed(|c| c.claude.enabled = false));
     }
