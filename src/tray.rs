@@ -329,6 +329,7 @@ impl App {
             items.start[i].set_text(format!("Start {} 5h limit", p.name()));
         }
         items.auto.set_checked(self.config.auto_anchor);
+        items.auto.set_enabled(self.config_error.is_none());
         items
             .auto
             .set_text(match (&self.config_error, self.next_daily()) {
@@ -409,9 +410,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let _ = std::fs::create_dir_all(data_dir());
                     platform::open_folder(&data_dir());
                 } else if id == items.auto.id() {
-                    self.config.auto_anchor = !self.config.auto_anchor;
-                    // Never overwrite a config file we failed to read.
-                    if self.config_error.is_none()
+                    if toggle_auto(&mut self.config, &self.config_error)
                         && let Err(e) = self.config.save()
                     {
                         log(&e);
@@ -461,6 +460,16 @@ pub(crate) fn apply(
     }
 }
 
+/// Flip automatic starts; true if the change should be saved. With an unreadable config the
+/// in-memory defaults are only a stand-in, so nothing changes until Settings recovers the file.
+fn toggle_auto(config: &mut Config, config_error: &Option<String>) -> bool {
+    if config_error.is_some() {
+        return false;
+    }
+    config.auto_anchor = !config.auto_anchor;
+    true
+}
+
 fn fmt_time(epoch: i64, now: i64) -> String {
     let tz = TimeZone::system();
     let (Ok(t), Ok(n)) = (Timestamp::from_second(epoch), Timestamp::from_second(now)) else {
@@ -478,5 +487,22 @@ fn truncate_chars(s: &str, max: usize) -> String {
     match s.char_indices().nth(max.saturating_sub(1)) {
         Some((i, _)) if s.chars().count() > max => format!("{}…", &s[..i]),
         _ => s.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_error_blocks_auto_toggle() {
+        let mut config = Config {
+            auto_anchor: false,
+            ..Config::default()
+        };
+        assert!(!toggle_auto(&mut config, &Some("bad config".into())));
+        assert!(!config.auto_anchor);
+        assert!(toggle_auto(&mut config, &None));
+        assert!(config.auto_anchor);
     }
 }
