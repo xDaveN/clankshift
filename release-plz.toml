@@ -4,5 +4,7 @@ git_only = true
 # semver-checks is for library APIs; ClankShift is an application.
 semver_check = false
 git_release_enable = true
+# Draft until the Windows job has attached the exe, so a failed build never publishes an empty release.
+git_release_draft = true
 # Only release when the release PR is merged, never directly on other pushes.
 release_always = false
