@@ -25,6 +25,12 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      # The release PR also builds the exe exactly as the release job does, so it can't fail after merging.
+      - if: startsWith(github.head_ref, 'release-plz-')
+        run: cargo build --release --locked
+      - if: startsWith(github.head_ref, 'release-plz-')
+        name: Check no VC++ runtime dependency
+        run: if (Select-String -Path target/release/clankshift.exe -Pattern vcruntime -SimpleMatch -Quiet) { throw 'clankshift.exe imports the VC++ runtime' }
 
   # Windows is the only supported desktop target today; this keeps the portable core honest.
   portability:

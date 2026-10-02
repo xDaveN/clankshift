@@ -1,5 +1,7 @@
 # release-plz keeps a release PR open with the next version + changelog (from Conventional Commits).
-# Merging it tags the version, creates the GitHub Release, and attaches the exe and license notices.
+# Merging it tags the version and creates a draft GitHub Release; the Windows job attaches the exe and
+# license notices, then publishes it. If that job fails, use "Re-run failed jobs" (re-running all jobs
+# finds the tag already released and builds nothing).
 name: Release
 
 on:
@@ -82,7 +84,11 @@ jobs:
         shell: bash
         run: bash scripts/license-notices.sh target/notices
       # Same file name every release, so updating keeps the Start with Windows entry valid.
-      - name: Upload
+      # --clobber lets a re-run replace assets from a partly failed upload.
+      - name: Upload and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ env.TAG }} target/release/clankshift.exe target/notices/THIRD-PARTY-LICENSES.txt target/notices/RUST-LICENSES.html
+        run: |
+          gh release upload $env:TAG target/release/clankshift.exe target/notices/THIRD-PARTY-LICENSES.txt target/notices/RUST-LICENSES.html --clobber
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          gh release edit $env:TAG --draft=false
