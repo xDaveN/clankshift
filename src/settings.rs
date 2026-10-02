@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use eframe::egui::{self, Align, Color32, FontFamily, FontId, Layout, RichText, Stroke, vec2};
 
 use crate::config::Config;
-use crate::{icon, platform};
+use crate::{icon, platform, state};
 
 struct Settings {
     cfg: Config,
@@ -50,7 +50,7 @@ pub fn run() {
         centered: true,
         ..Default::default()
     };
-    let _ = eframe::run_native(
+    if let Err(e) = eframe::run_native(
         "ClankShift Settings",
         options,
         Box::new(|cc| {
@@ -66,7 +66,9 @@ pub fn run() {
             }
             Ok(Box::new(app))
         }),
-    );
+    ) {
+        state::log(&format!("settings window failed: {e}"));
+    }
 }
 
 struct Palette {
@@ -254,20 +256,16 @@ fn divider(ui: &mut egui::Ui) {
 }
 
 /// Title (+ optional description) on the left, controls added right-to-left on the right.
-fn row(ui: &mut egui::Ui, title: &str, desc: &str, controls: impl FnOnce(&mut egui::Ui)) {
-    let height = if desc.is_empty() { 38.0 } else { 50.0 };
+fn row(ui: &mut egui::Ui, title: &str, controls: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), height),
+        vec2(ui.available_width(), 38.0),
         Layout::right_to_left(Align::Center),
         |ui| {
             controls(ui);
             ui.add_space(12.0);
             ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                ui.add_space(if desc.is_empty() { 10.0 } else { 6.0 });
+                ui.add_space(10.0);
                 ui.label(title);
-                if !desc.is_empty() {
-                    ui.label(RichText::new(desc).small().color(Palette::of(ui).weak));
-                }
             });
         },
     );
@@ -382,11 +380,11 @@ impl eframe::App for Settings {
 
                     section(ui, "Providers");
                     card(ui, |ui| {
-                        row(ui, "Codex", "", |ui| {
+                        row(ui, "Codex", |ui| {
                             toggle(ui, &mut self.cfg.codex.enabled, "Codex");
                         });
                         divider(ui);
-                        row(ui, "Claude", "", |ui| {
+                        row(ui, "Claude", |ui| {
                             toggle(ui, &mut self.cfg.claude.enabled, "Claude");
                         });
                     });
@@ -394,22 +392,17 @@ impl eframe::App for Settings {
                     section(ui, "Automatic starts");
                     card(ui, |ui| {
                         let title = "Master switch";
-                        row(ui, title, "", |ui| {
+                        row(ui, title, |ui| {
                             toggle(ui, &mut self.cfg.auto_anchor, title);
                         });
                         if self.cfg.auto_anchor {
                             divider(ui);
                             let title = "On launch";
-                            row(ui, title, "", |ui| {
+                            row(ui, title, |ui| {
                                 toggle(ui, &mut self.cfg.anchor_on_start, title);
                             });
                             divider(ui);
-                            let desc = if self.daily_on {
-                                format!("Resets at {:02}:{:02}", (self.hour + 5) % 24, self.minute)
-                            } else {
-                                String::new()
-                            };
-                            row(ui, "Every day at", &desc, |ui| {
+                            row(ui, "Every day at", |ui| {
                                 toggle(ui, &mut self.daily_on, "Every day at");
                                 ui.add_space(8.0);
                                 ui.add_enabled_ui(self.daily_on, |ui| self.time_picker(ui));
@@ -424,7 +417,7 @@ impl eframe::App for Settings {
                         } else {
                             "Start at login"
                         };
-                        row(ui, title, "", |ui| {
+                        row(ui, title, |ui| {
                             toggle(ui, &mut self.autostart, title);
                         });
                     });
