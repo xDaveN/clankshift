@@ -439,13 +439,21 @@ impl ApplicationHandler<UserEvent> for App {
                     let _ = std::fs::create_dir_all(data_dir());
                     platform::open_folder(&data_dir());
                 } else if id == items.auto.id() {
-                    if toggle_auto(
+                    match toggle_auto(
                         &mut self.config,
                         self.config_error.is_some() || self.settings_open,
+                        Config::save,
                     ) {
-                        self.cancel_retries();
-                        if let Err(e) = self.config.save() {
+                        Ok(true) => self.cancel_retries(),
+                        Ok(false) => {}
+                        Err(e) => {
                             log(&e);
+                            if let Some((tray, _)) = &self.tray {
+                                platform::notify(
+                                    tray,
+                                    "Could not save the automatic starts setting; it is unchanged.",
+                                );
+                            }
                         }
                     }
                     self.rules_since = now();
@@ -498,15 +506,26 @@ pub(crate) fn apply(
     }
 }
 
-/// Flip automatic starts; true if the change should be saved. Blocked while the config is
-/// unreadable (the in-memory defaults are only a stand-in) or while Settings is open (its save
-/// would overwrite the change, or this save would overwrite Settings' before the tray reloads).
-fn toggle_auto(config: &mut Config, blocked: bool) -> bool {
+/// Flip automatic starts and save; true if it changed. The live config changes only after the
+/// save succeeds, so the tray never runs a setting that a restart would not load. Blocked while
+/// the config is unreadable (the in-memory defaults are only a stand-in) or while Settings is
+/// open (its save would overwrite the change, or this save would overwrite Settings' before the
+/// tray reloads).
+fn toggle_auto(
+    config: &mut Config,
+    blocked: bool,
+    save: impl FnOnce(&Config) -> Result<(), String>,
+) -> Result<bool, String> {
     if blocked {
-        return false;
+        return Ok(false);
     }
-    config.auto_anchor = !config.auto_anchor;
-    true
+    let next = Config {
+        auto_anchor: !config.auto_anchor,
+        ..config.clone()
+    };
+    save(&next)?;
+    *config = next;
+    Ok(true)
 }
 
 /// Did the settings that decide when automatic starts run change? CLI paths and models do not.
@@ -553,10 +572,30 @@ mod tests {
             auto_anchor: false,
             ..Config::default()
         };
-        assert!(!toggle_auto(&mut config, true));
+        let mut saved = None;
+        assert_eq!(
+            toggle_auto(&mut config, true, |_| unreachable!()),
+            Ok(false)
+        );
         assert!(!config.auto_anchor);
-        assert!(toggle_auto(&mut config, false));
+        let save = |c: &Config| {
+            saved = Some(c.auto_anchor);
+            Ok(())
+        };
+        assert_eq!(toggle_auto(&mut config, false, save), Ok(true));
         assert!(config.auto_anchor);
+        assert_eq!(saved, Some(true));
+    }
+
+    #[test]
+    fn failed_auto_toggle_save_changes_nothing() {
+        let mut config = Config::default();
+        let failed = toggle_auto(&mut config, false, |c| {
+            assert!(!c.auto_anchor);
+            Err("config.toml: Access is denied.".into())
+        });
+        assert_eq!(failed, Err("config.toml: Access is denied.".into()));
+        assert_eq!(config, Config::default());
     }
 
     #[test]
