@@ -8,13 +8,13 @@
 //! already running (or the state is unclear) and nothing is sent. Nor is anything sent unless both
 //! reads report included usage allowed: otherwise the request could use paid credits. Otherwise
 //! one ephemeral `codex exec` with the cheapest model at low effort anchors the window, then the
-//! state is re-read.
+//! state is re-read (twice if needed) to confirm it started; if not, it is reported uncertain.
 
 use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Outcome, Session, resolve};
+use super::{MAYBE_SENT, Outcome, Session, resolve};
 use crate::config::ProviderConfig;
 use crate::schedule::WINDOW_SECS;
 
@@ -68,6 +68,15 @@ impl Snapshot {
         looks_inactive(self.resets_at, self.used, before, after)
     }
 
+    /// Does this read alone show a running 5h limit: usage, or a reset earlier than the
+    /// placeholder's? Not simply `!looks_inactive`, which also refuses unknown or malformed usage.
+    fn running(&self) -> Result<bool, String> {
+        let (before, after) = self.seconds();
+        check_reset(self.resets_at, after)?;
+        let earlier = self.resets_at < before + WINDOW_SECS - CLOCK_SKEW_SECS;
+        Ok(earlier || self.used.is_some_and(|u| u > 0))
+    }
+
     /// Only `true` counts: false (e.g. weekly limit reached) or unknown could mean paid credits.
     fn check_included(&self) -> Result<(), String> {
         if self.included {
@@ -104,8 +113,32 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     }
     second.check_included()?;
     exec(&program, &model)?;
-    let (after, _) = read(&program, false)?;
-    Ok((Outcome::Anchored, Some(after.resets_at)))
+    let resets_at = read(&program, false).and_then(|(after, _)| {
+        confirm(&after, || {
+            std::thread::sleep(Duration::from_secs(RECHECK_SECS));
+            read(&program, false).map(|(again, _)| again)
+        })
+    });
+    // The request was sent: retrying could start another 5h limit or spend more.
+    let resets_at = resets_at.map_err(|e| format!("{e} {MAYBE_SENT}"))?;
+    Ok((Outcome::Anchored, Some(resets_at)))
+}
+
+/// Reset of the 5h limit a completed start began, from the read `after` it. A just-started
+/// limit looks like the placeholder in one read, so unless it is `running` it is read `again`:
+/// only a fixed reset confirms the start. Still moving (or unclear): no reset is reported.
+fn confirm(
+    after: &Snapshot,
+    again: impl FnOnce() -> Result<Snapshot, String>,
+) -> Result<i64, String> {
+    if after.running()? {
+        return Ok(after.resets_at);
+    }
+    let again = again()?;
+    if again.running()? || moved(after, &again) == Ok(false) {
+        return Ok(again.resets_at);
+    }
+    Err("Codex did not confirm that the 5h limit started".into())
 }
 
 /// One short app-server session: rate limits, then the model list if `with_models` (else `Null`).
@@ -513,6 +546,40 @@ mod tests {
             s3 + WINDOW_SECS
         );
         assert!(read_after(s3 + 60).is_ok());
+    }
+
+    #[test]
+    fn start_is_confirmed_only_by_a_running_limit() {
+        // Read after the start (sent at T + 30), and again 11 s later.
+        let (s3, s4) = (T + 30, T + 41);
+        let unused = || -> Result<Snapshot, String> { panic!("no second read needed") };
+        // Already used, or reset fixed earlier: running, no second read.
+        let used = Snapshot {
+            used: Some(1),
+            ..snap(s3 + WINDOW_SECS, s3, 600)
+        };
+        assert_eq!(confirm(&used, unused), Ok(s3 + WINDOW_SECS));
+        assert_eq!(confirm(&snap(s3 + 60, s3, 600), unused), Ok(s3 + 60));
+        // Just started (fresh-looking, 0%): its reset stays fixed across the second read.
+        let started = s3 - 5 + WINDOW_SECS;
+        let after = snap(started, s3, 600);
+        assert_eq!(after.looks_inactive(), Ok(true));
+        assert_eq!(confirm(&after, || Ok(snap(started, s4, 600))), Ok(started));
+        // Still the moving placeholder: not reported as started.
+        let after = snap(placeholder(s3 * 1000 + 600, true), s3, 600);
+        let again = || Ok(snap(placeholder(s4 * 1000 + 600, true), s4, 600));
+        assert!(confirm(&after, again).is_err());
+        // Unclear or failed second read: not started either.
+        assert!(confirm(&after, || Ok(snap(s4 + WINDOW_SECS + 30, s4, 600))).is_err());
+        assert!(confirm(&after, || Err("exited early".into())).is_err());
+        // Unknown or malformed usage on a moving reset proves nothing, on either read.
+        for used in [None, Some(-1)] {
+            let odd = |s: Snapshot| Snapshot { used, ..s };
+            let odd_after = odd(snap(placeholder(s3 * 1000 + 600, true), s3, 600));
+            assert!(confirm(&odd_after, again).is_err(), "{used:?}");
+            let odd_again = || Ok(odd(snap(placeholder(s4 * 1000 + 600, true), s4, 600)));
+            assert!(confirm(&after, odd_again).is_err(), "{used:?}");
+        }
     }
 
     #[test]
