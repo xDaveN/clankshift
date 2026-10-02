@@ -41,7 +41,10 @@ looks like the placeholder (within a minute of clock skew) is read again 10 s la
 only: the model is chosen from the first read, so nothing slow sits between this read and the
 request. Only if the reset moved by the time between the two status replies (measured from
 request to reply, within Codex's 1 s rounding) does one ephemeral `codex exec` with the cheapest
-listed model at low effort follow, then limits are re-read. A fixed reset means a just-started window: nothing is sent. A
+listed model at low effort follow, then limits are re-read to confirm the start: a fresh-looking
+reset is read again 10 s later and must stay fixed. If it still moves, is unclear, or a read
+fails, no reset is recorded and the start is treated like a Claude request that may have been
+sent (below). A fixed reset before the start means a just-started window: nothing is sent. A
 reply slower than 2 s, an expired reset, one more than 5h away, or any other change (such as a
 window started during the check) fails without sending.
 ClankShift still reads Codex status only when an anchor is due.
@@ -111,8 +114,9 @@ gives up. Retries are in memory only. Changing when automatic starts run (the au
 on-launch, daily time, or a provider's switch) cancels pending retries and any retry of a start
 still running; CLI path/model edits do not. Failed manual starts are not retried. A Claude failure after
 the request was launched (timeout, no 5h limit reported) is not retried either: the request may
-have started the 5h limit, and repeating it would only spend quota. Codex retries are safe because
-every Codex start is preceded by fresh status reads. A usable 5h reset Claude reports is kept even
+have started the 5h limit, and repeating it would only spend quota. The same applies to a Codex
+start that completed but could not be confirmed. Other Codex retries are safe because every Codex
+start is preceded by fresh status reads. A usable 5h reset Claude reports is kept even
 if the request then fails or its output breaks off (timeout); a missing or malformed reset never
 hides such a failure.
 
