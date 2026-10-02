@@ -17,7 +17,7 @@ use crate::config::ProviderConfig;
 use crate::schedule::WINDOW_SECS;
 
 /// Allowed difference between our clock and Codex's, plus its 1 s rounding.
-const CLOCK_SKEW_SECS: i64 = 60;
+pub const CLOCK_SKEW_SECS: i64 = 60;
 
 /// Pause between the two reads that tell the moving placeholder from a fixed reset.
 const RECHECK_SECS: u64 = 10;

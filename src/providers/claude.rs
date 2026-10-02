@@ -37,6 +37,9 @@ const CLOCK_SKEW_SECS: i64 = 60;
 /// reset 12:40, seen 2026-10-01); one step is allowed beyond a fresh 5h in case it rounds up.
 const ROUNDING_SECS: i64 = 10 * 60;
 
+/// How far past a fresh 5h after the observation a reported reset may lie and still be accepted.
+pub const MAX_RESET_EXTRA_SECS: i64 = ROUNDING_SECS + CLOCK_SKEW_SECS;
+
 pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
     check_custom_headers()?;
     let program = resolve(&cfg.command, "claude")?;
@@ -251,8 +254,7 @@ fn parse_stream(lines: &[String], started: i64, observed: i64) -> Result<i64, St
     // A usable reset is kept even if the request then failed: it is what Claude says. A running
     // limit resets after the request was sent; a new one at most 5h after the reply.
     let plausible = |r: &i64| {
-        *r > started - CLOCK_SKEW_SECS
-            && *r <= observed + WINDOW_SECS + ROUNDING_SECS + CLOCK_SKEW_SECS
+        *r > started - CLOCK_SKEW_SECS && *r <= observed + WINDOW_SECS + MAX_RESET_EXTRA_SECS
     };
     if let Some(r) = resets
         .iter()
