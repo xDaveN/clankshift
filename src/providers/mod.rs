@@ -67,7 +67,7 @@ impl Provider {
     }
 
     /// Blocking (seconds to a minute); run on a worker thread.
-    pub fn anchor(self, cfg: &ProviderConfig) -> Result<(Outcome, Option<i64>), String> {
+    pub fn anchor(self, cfg: &ProviderConfig) -> Result<(Outcome, i64), String> {
         match self {
             Provider::Codex => codex::anchor(cfg),
             Provider::Claude => claude::anchor(cfg),
@@ -226,7 +226,7 @@ impl Session {
     }
 
     fn send(&mut self, line: &str) -> Result<(), String> {
-        let stdin = self.stdin.as_mut().ok_or("stdin closed")?;
+        let stdin = self.stdin.as_mut().unwrap();
         writeln!(stdin, "{line}")
             .and_then(|_| stdin.flush())
             .map_err(|e| format!("write failed: {e}"))

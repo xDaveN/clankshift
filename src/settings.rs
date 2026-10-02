@@ -284,7 +284,7 @@ impl Settings {
             .then(|| format!("{:02}:{:02}", self.hour, self.minute));
         // Config first: if it fails, nothing has changed.
         self.cfg.save()?;
-        if self.autostart != platform::autostart_enabled() || self.autostart {
+        if self.autostart || platform::autostart_enabled() {
             // Re-writing refreshes the path if the exe moved.
             platform::set_autostart(self.autostart)
                 .map_err(|e| format!("Settings saved, but Start with Windows failed: {e}"))?;

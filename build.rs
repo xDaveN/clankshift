@@ -1,6 +1,6 @@
 //! Embeds the app icon and version info into the Windows executable.
 
-#[allow(dead_code)]
+#[cfg(windows)]
 #[path = "src/icon.rs"]
 mod icon;
 

@@ -29,7 +29,7 @@ const MAX_SLEEP: Duration = Duration::from_secs(10 * 60);
 
 pub enum UserEvent {
     Menu(MenuEvent),
-    Done(Provider, Result<(Outcome, Option<i64>), String>),
+    Done(Provider, Result<(Outcome, i64), String>),
     SettingsClosed,
 }
 
@@ -207,9 +207,6 @@ impl App {
                 continue;
             };
             self.retry[i] = None;
-            if !self.config.auto_anchor || !p.config(&self.config).enabled {
-                continue;
-            }
             if now - since > GRACE_SECS {
                 log(&format!(
                     "{}: retry missed (computer asleep or off); skipped",
@@ -241,11 +238,11 @@ impl App {
         let Some((t, base)) = self.daily_rule() else {
             return;
         };
-        let now = now();
-        let due = Timestamp::from_second(now)
-            .ok()
-            .and_then(|n| latest_daily(base, n, t, &TimeZone::system()));
-        let Some(due) = due else { return };
+        let timestamp = Timestamp::now();
+        let now = timestamp.as_second();
+        let Some(due) = latest_daily(base, timestamp, t, &TimeZone::system()) else {
+            return;
+        };
         self.state.last_daily_run = Some(now);
         self.state.save();
         match daily_trigger(due.as_second(), now) {
@@ -254,7 +251,7 @@ impl App {
         }
     }
 
-    fn finish(&mut self, p: Provider, result: Result<(Outcome, Option<i64>), String>) {
+    fn finish(&mut self, p: Provider, result: Result<(Outcome, i64), String>) {
         let i = idx(p);
         self.busy[i] = false;
         let auto_since = self.auto_since[i].take();
@@ -264,11 +261,7 @@ impl App {
                     Outcome::Anchored => "started a new 5h limit",
                     Outcome::AlreadyActive => "5h limit was already running",
                 };
-                log(&format!(
-                    "{}: {what}, resets {}",
-                    p.name(),
-                    resets_at.map_or("unknown".into(), |r| r.to_string())
-                ));
+                log(&format!("{}: {what}, resets {resets_at}", p.name()));
             }
             Err(e) => log(&format!("{}: error: {e}", p.name())),
         }
@@ -369,8 +362,7 @@ impl App {
                 (None, None) => "Automatic starts".to_string(),
             });
         items.settings.set_enabled(!self.settings_open);
-        // Windows truncates tray tooltips at 127 characters.
-        let _ = tray.set_tooltip(Some(truncate_chars(&tooltip, 127)));
+        let _ = tray.set_tooltip(Some(&tooltip));
     }
 
     /// Earliest moment something can change: the daily trigger, a retry, or a known window ending.
@@ -483,13 +475,13 @@ impl ApplicationHandler<UserEvent> for App {
 /// processes ended, so a request it launched reached the provider, if at all, before then.
 pub(crate) fn apply(
     st: &mut ProviderState,
-    result: Result<(Outcome, Option<i64>), String>,
+    result: Result<(Outcome, i64), String>,
     now: i64,
 ) -> bool {
     st.request_pending = false;
     match result {
         Ok((_, resets_at)) => {
-            st.resets_at = resets_at;
+            st.resets_at = Some(resets_at);
             st.checked_at = Some(now);
             st.last_error = None;
             st.unknown_until = None;
@@ -552,13 +544,6 @@ fn fmt_time(epoch: i64, now: i64) -> String {
         t.strftime("%H:%M").to_string()
     } else {
         t.strftime("%a %H:%M").to_string()
-    }
-}
-
-fn truncate_chars(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max.saturating_sub(1)) {
-        Some((i, _)) if s.chars().count() > max => format!("{}…", &s[..i]),
-        _ => s.to_string(),
     }
 }
 

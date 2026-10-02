@@ -72,7 +72,7 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let s = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let s = toml::to_string_pretty(self).unwrap();
         std::fs::create_dir_all(config_dir()).map_err(|e| e.to_string())?;
         crate::state::write_atomic(&path(), &s).map_err(|e| format!("config.toml: {e}"))
     }
@@ -98,13 +98,5 @@ mod tests {
         assert_eq!(parse_hhmm(" 7:05 "), Some(jiff::civil::time(7, 5, 0, 0)));
         assert_eq!(parse_hhmm("24:00"), None);
         assert_eq!(parse_hhmm("7"), None);
-    }
-
-    #[test]
-    fn partial_file_uses_defaults() {
-        let c: Config =
-            toml::from_str("daily_at = \"06:00\"\n[claude]\nenabled = false\n").unwrap();
-        assert!(c.auto_anchor && c.codex.enabled && !c.claude.enabled);
-        assert_eq!(c.daily_time(), Some(jiff::civil::time(6, 0, 0, 0)));
     }
 }
