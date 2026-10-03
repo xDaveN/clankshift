@@ -25,12 +25,24 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      # The release exe embeds these notices; the script fails if any of them is missing.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: License notices
+        shell: bash
+        run: bash scripts/license-notices.sh target/notices
       # The release PR also builds the exe exactly as the release job does, so it can't fail after merging.
       - if: startsWith(github.head_ref, 'release-plz-')
         run: cargo build --release --locked
+        env:
+          CLANKSHIFT_LICENSES: ${{ github.workspace }}/target/notices/LICENSES.txt
       - if: startsWith(github.head_ref, 'release-plz-')
         name: Check no VC++ runtime dependency
         run: if (Select-String -Path target/release/clankshift.exe -Pattern vcruntime -SimpleMatch -Quiet) { throw 'clankshift.exe imports the VC++ runtime' }
+      - if: startsWith(github.head_ref, 'release-plz-')
+        name: Check embedded license notices
+        run: if (-not (Select-String -Path target/release/clankshift.exe -Pattern 'Copyright notices for The Rust Standard Library' -SimpleMatch -Quiet)) { throw 'clankshift.exe lacks the license notices' }
 
   # Windows is the only supported desktop target today; this keeps the portable core honest.
   portability:
@@ -52,9 +64,3 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
-      # Releases ship these notices; the script fails if any of them is missing.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-about
-      - name: License notices
-        run: bash scripts/license-notices.sh target/notices

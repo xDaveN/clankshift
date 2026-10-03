@@ -1,10 +1,28 @@
-//! Embeds the app icon and version info into the Windows executable.
+//! Embeds the license notices, and the app icon and version info into the Windows executable.
 
 #[cfg(windows)]
 #[path = "src/icon.rs"]
 mod icon;
 
 fn main() {
+    // Release builds must set CLANKSHIFT_LICENSES to the file written by scripts/license-notices.sh.
+    println!("cargo:rerun-if-env-changed=CLANKSHIFT_LICENSES");
+    let notices = match std::env::var("CLANKSHIFT_LICENSES") {
+        Ok(path) => {
+            println!("cargo:rerun-if-changed={path}");
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {path}: {e}"))
+        }
+        Err(_) if std::env::var("PROFILE").as_deref() == Ok("release") => panic!(
+            "release builds need CLANKSHIFT_LICENSES set to the file written by \
+             scripts/license-notices.sh (see CONTRIBUTING.md)"
+        ),
+        Err(_) => "Development build: license notices are embedded in release builds \
+                   (see CONTRIBUTING.md)."
+            .into(),
+    };
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    std::fs::write(std::path::Path::new(&out_dir).join("LICENSES.txt"), notices).unwrap();
+
     println!("cargo:rerun-if-changed=src/icon.rs");
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
