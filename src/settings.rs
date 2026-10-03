@@ -44,7 +44,7 @@ pub fn run() {
                 width: 64,
                 height: 64,
             })
-            .with_inner_size([480.0, 680.0])
+            .with_inner_size([480.0, 705.0])
             .with_resizable(false)
             .with_maximize_button(false),
         centered: true,
