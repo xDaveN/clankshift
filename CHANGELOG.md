@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/xDaveN/clankshift/compare/v0.1.0...v0.1.1) - 2026-10-03
+
+### Other
+
+- add terms note and audience note to README ([#45](https://github.com/xDaveN/clankshift/pull/45))
+
 ## [0.1.0](https://github.com/xDaveN/clankshift/releases/tag/v0.1.0) - 2026-10-03
 
 Initial release for x64 Windows 10/11.
