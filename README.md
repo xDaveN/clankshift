@@ -89,7 +89,7 @@ Settings are in `%APPDATA%\ClankShift\config.toml`; state and log in `%LOCALAPPD
 ## License
 
 [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), your choice. Third-party notices are built into
-the exe under **Settings > Licenses…**. Found a security issue? Please
+the exe under **Settings > Licenses**. Found a security issue? Please
 [report it privately](https://github.com/xDaveN/clankshift/security/advisories/new).
 
 Not affiliated with OpenAI or Anthropic.

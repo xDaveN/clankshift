@@ -5,13 +5,17 @@
 mod icon;
 
 fn main() {
-    // Release builds set CLANKSHIFT_LICENSES to the file written by scripts/license-notices.sh.
+    // Release builds must set CLANKSHIFT_LICENSES to the file written by scripts/license-notices.sh.
     println!("cargo:rerun-if-env-changed=CLANKSHIFT_LICENSES");
     let notices = match std::env::var("CLANKSHIFT_LICENSES") {
         Ok(path) => {
             println!("cargo:rerun-if-changed={path}");
             std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {path}: {e}"))
         }
+        Err(_) if std::env::var("PROFILE").as_deref() == Ok("release") => panic!(
+            "release builds need CLANKSHIFT_LICENSES set to the file written by \
+             scripts/license-notices.sh (see CONTRIBUTING.md)"
+        ),
         Err(_) => "Development build: license notices are embedded in release builds \
                    (see CONTRIBUTING.md)."
             .into(),

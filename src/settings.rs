@@ -366,7 +366,10 @@ impl Settings {
                 }
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                if ui.add(egui::Button::new("Licenses…").small()).clicked() {
+                if ui
+                    .add(egui::Button::new("Licenses").min_size(vec2(96.0, 32.0)))
+                    .clicked()
+                {
                     self.licenses_open = true;
                 }
                 if let Some(e) = &self.error {

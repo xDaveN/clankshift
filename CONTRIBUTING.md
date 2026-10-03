@@ -31,11 +31,12 @@ version and creates a draft GitHub Release; the *Windows exe* job attaches `clan
 only release asset, then publishes it. If that job fails, open the Release run and use *Re-run failed
 jobs* (re-running all jobs builds nothing, because the tag already exists).
 
-The license notices are embedded in the exe and shown under *Settings → Licenses…*.
+The license notices are embedded in the exe and shown under *Settings → Licenses*.
 `scripts/license-notices.sh` writes them to one `LICENSES.txt`: ClankShift's own licenses, crates
 and fonts (via [cargo-about](https://github.com/EmbarkStudios/cargo-about) and `about.toml`), and
 the Rust standard library (from the building toolchain). CI runs the same script, so a missing
-notice fails the PR. Other builds show a placeholder; to embed the notices locally:
+notice fails the PR. Release builds (`--release`) fail without the notices; development builds
+show a placeholder instead. To build a release exe locally:
 
 ```sh
 cargo install --locked cargo-about
