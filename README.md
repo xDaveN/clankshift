@@ -19,6 +19,13 @@ all ClankShift does. It starts the 5h limit at a time you pick and repeats it as
 > [!NOTE]
 > This moves *when* resets happen. It doesn't give you more quota, and it does nothing for
 > weekly limits.
+>
+> Check your provider's terms before using it. You use it at your own risk.
+
+Yeah, this isn't for you guys who are running 10+ subs and your own slop observatory dashboards.
+It handles one account per provider, no switching.
+I know you're busy building the next multi dollar SaaS by chomping through tokens on benchmaxx reasoning efforts,
+but some of us are actually in the green. (:
 
 ## Install
 
