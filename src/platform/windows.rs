@@ -1,8 +1,11 @@
 //! Windows specifics: hidden child processes, process-tree cleanup, single instance, login startup,
 //! tray notifications.
 
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::ptr::{null, null_mut};
 
@@ -15,8 +18,8 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Registry::{
-    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_BINARY, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW,
-    RegSetKeyValueW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_SZ, RRF_RT_REG_BINARY, RRF_RT_REG_SZ,
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CreateMutexW};
 use windows_sys::Win32::UI::Shell::{
@@ -25,6 +28,47 @@ use windows_sys::Win32::UI::Shell::{
 
 /// Suffixes tried when looking a CLI up on PATH (npm installs `codex.cmd`).
 pub const EXE_SUFFIXES: &[&str] = &[".exe", ".cmd"];
+
+/// The PATH Windows gives programs started now: system entries, then user entries. Ours was
+/// fixed at launch, and whatever launched us may have passed a stale or reduced one.
+pub fn current_path() -> Vec<PathBuf> {
+    [
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+        (HKEY_CURRENT_USER, "Environment"),
+    ]
+    .into_iter()
+    .filter_map(|(root, key)| registry_string(root, key, "Path"))
+    .flat_map(|s| std::env::split_paths(&s).collect::<Vec<_>>())
+    .collect()
+}
+
+/// A string value; `%VAR%`s in REG_EXPAND_SZ values are expanded with this process's variables.
+fn registry_string(root: HKEY, key: &str, value: &str) -> Option<OsString> {
+    let (key, value) = (wide(key), wide(value));
+    let mut buf = vec![0u16; 32768]; // an environment variable's maximum length
+    let mut len = (buf.len() * 2) as u32;
+    let err = unsafe {
+        RegGetValueW(
+            root,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+        )
+    };
+    if err != 0 {
+        return None;
+    }
+    let s = &buf[..len as usize / 2];
+    Some(OsString::from_wide(
+        s.split(|&c| c == 0).next().unwrap_or_default(),
+    ))
+}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
