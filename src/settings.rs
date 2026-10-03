@@ -442,6 +442,7 @@ impl eframe::App for Settings {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("Settings");
+                    ui.weak(concat!("ClankShift v", env!("CARGO_PKG_VERSION")));
 
                     if let Some(e) = &self.load_error {
                         ui.add_space(12.0);
