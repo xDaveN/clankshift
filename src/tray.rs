@@ -411,26 +411,37 @@ impl App {
         } else if self.busy[idx(p)] {
             "Checking…".to_string()
         } else if st.last_error.as_deref().is_some_and(is_not_found) {
-            "Not found, set path in Settings".to_string()
+            "Not found | set path in Settings".to_string()
         } else if st.last_error.is_some() {
             // The reason is in the log.
             match self.retry[idx(p)] {
-                Some((_, at)) => format!("Error, retrying {}", fmt_time(at, now)),
-                None => "Error, see logs".to_string(),
+                Some((_, at)) => format!("Error | retrying {}", fmt_time(at, now)),
+                None => "Error | see logs".to_string(),
             }
         } else {
             match st.resets_at {
-                Some(r) if r > now => format!("Resets {}", fmt_time(r, now)),
+                Some(r) if r > now => fmt_time(r, now),
                 Some(r) => format!("Ended {}", fmt_time(r, now)),
                 None => "Not checked yet".to_string(),
             }
         };
         let progress = match (st.sequence, self.config.keep_starting) {
-            (Some(n @ 1..), KeepStarting::For(max)) => format!(" · {n} of {max}"),
-            (Some(1..), _) => " · repeating".to_string(),
+            // One segment per 5h limit of the sequence, filled once counted.
+            (Some(n @ 1..), KeepStarting::For(max)) => format!(
+                " | {}{}",
+                "▰".repeat(n as usize),
+                "▱".repeat(max.saturating_sub(n) as usize)
+            ),
+            (Some(1..), _) => " | ↻".to_string(),
             _ => String::new(),
         };
-        format!("{} · {text}{progress}", p.name())
+        // Menu text is proportional: a three-per-em space makes "Codex" as wide as "Claude" in
+        // Segoe UI, so what follows the name lines up.
+        let name = match p {
+            Provider::Codex => "Codex\u{2004}",
+            Provider::Claude => "Claude",
+        };
+        format!("{name} | {text}{progress}")
     }
 
     fn refresh_menu(&self) {
@@ -460,9 +471,9 @@ impl App {
         items
             .auto
             .set_text(match (&self.config_error, self.next_daily()) {
-                (Some(_), _) => "Automatic starts · settings file error".to_string(),
+                (Some(_), _) => "Automatic starts | settings file error".to_string(),
                 (None, Some(t)) => {
-                    format!("Automatic starts · next {}", fmt_time(t.as_second(), now))
+                    format!("Automatic starts | next {}", fmt_time(t.as_second(), now))
                 }
                 (None, None) => "Automatic starts".to_string(),
             });
