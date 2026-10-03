@@ -5,7 +5,7 @@
 
 **Start your Codex and Claude 5h limits early, so they reset when you actually need them.**
 
-A tiny Windows tray app. It sits there doing nothing, and once a day (or when you log in)
+A tiny Windows tray app. It sits there doing nothing, and at a time you pick (or when you log in)
 it sends one tiny message to kick off a fresh 5h limit.
 
 ## Why
@@ -28,10 +28,10 @@ they can follow.
 You need x64 Windows 10/11 and the [Codex CLI](https://github.com/openai/codex) and/or
 [Claude Code](https://github.com/anthropics/claude-code), signed in with your subscription.
 
-**Claude requirement:** Claude support requires **Usage credits / extra usage** to be turned off in
-Claude's **Settings > Usage**. ClankShift cannot verify or enforce this setting, and cannot tell
-whether a request will use your included quota or paid credits. If it is on, scheduled requests
-may spend credits after your included quota runs out.
+> [!IMPORTANT]
+> Using Claude? Turn off **Usage credits / extra usage** in Claude's **Settings > Usage**.
+> ClankShift can't see that setting, so with it on, a start could spend paid credits once your
+> included quota is gone.
 
 Download `clankshift.exe` from [Releases](https://github.com/xDaveN/clankshift/releases), put it
 somewhere permanent and run it. To update, choose **Quit** in the tray, replace the file, then
@@ -50,48 +50,42 @@ Everything lives in the tray menu:
   Windows, and CLI paths
 - **Open logs** if something went wrong
 
-For a reset around 12:00, start at 07:00: turn on *Every day at 07:00*, or *On launch*
-plus *Start with Windows* if you usually log in around then.
-Another reset around 17:00 requires new usage around 12:00, or *Repeat*: after
-an automatic start, it starts the next 5h limit at each reset, a set number of times
-or until stopped. The tray shows the progress.
+Want a reset around 12:00? Start at 07:00: turn on *Every day at 07:00*, or *On launch* plus
+*Start with Windows* if you usually log in around then.
+
+Want another one around 17:00 too? Turn on *Repeat*. After an automatic start, it starts the
+next 5h limit right at each reset, a set number of times or until stopped. The tray shows the
+progress.
 
 ## How it works
 
 ClankShift skips a provider whose reported 5h limit is still running. Between scheduled actions
 it stays quiet: no provider polling, background provider processes, or network traffic.
 
-- **Codex:** reads the 5h limit from `codex app-server` (no quota used). If none is running,
-  sends one tiny request with a cheaper listed model (or the account's default) only when Codex explicitly reports included
-  plan usage available. Unknown or unavailable included usage means nothing is sent.
+- **Codex:** reads the 5h limit from `codex app-server` (no quota used). If none is running
+  and Codex says your plan has usage left, it sends one tiny request with a cheap model.
+  If that's unclear, nothing is sent.
 - **Claude:** there's no free way to check, so the start request *is* the check: a one-line
   Haiku prompt with tools, MCP and hooks off (~450 tokens).
 
 The tray only shows what the provider reported, never guesses. No live usage percentages,
-since that would need constant polling. Use `/status` in Codex or `/usage` in Claude Code for that.
+since that would need constant polling: use `/status` in Codex or `/usage` in Claude Code.
 
 Settings are in `%APPDATA%\ClankShift\config.toml`; state and log in `%LOCALAPPDATA%\ClankShift\`.
 
 ## Good to know
 
-- None of this is a documented provider contract. If Codex or Claude change how limits work,
+- None of this is an official provider feature. If Codex or Claude change how limits work,
   ClankShift may need an update.
-- Each start costs a very small bit of quota.
-- A daily start missed by more than an hour (PC asleep) is skipped. One that passes while
-  ClankShift is closed is not made up later; *Start on launch* covers that case.
-- A failed automatic start is retried every 10 minutes for up to an hour when safe to retry.
-  A start that may already have been sent is not retried.
-- *Repeat* stops if a next start is missed by more than an hour or fails; it
-  never makes up missed 5h limits. Claude's next start waits about 11 minutes past the shown
-  reset, since Claude rounds reset times down. Turning automatic starts, *Repeat*, or a
-  provider off stops it; turning them back on waits for the next automatic start.
-- If a Claude start may have reached Claude without a usable answer (or ClankShift closed
-  during it), automatic Claude starts wait about 5¼ hours, until a 5h limit it may have started
-  has passed.
-- Claude may occasionally get a request while a 5h limit is already running (if you used it
-  elsewhere in the meantime). This uses a small amount of quota.
-- Reset times are cached for one account per provider. After switching CLI accounts, the old
-  account's reset may remain displayed until it passes.
+- Each start costs a tiny bit of quota. Claude may occasionally get one while a 5h limit is
+  already running (say, you used it elsewhere), since it can't check first.
+- A start missed by more than an hour (PC asleep, ClankShift closed) is skipped, not made up
+  later. *On launch* covers that case. *Repeat* stops then too, or when a start fails.
+- A failed start is retried every 10 minutes for up to an hour, unless it may already have
+  gone through. If a Claude start might have gone through without a clear answer, automatic
+  Claude starts pause for about 5¼ hours to be safe.
+- Claude rounds its reset times down, so *Repeat* waits about 11 minutes past the shown reset.
+- After switching CLI accounts, the old account's reset time may show until it passes.
 
 ## Building
 
@@ -100,8 +94,7 @@ Found a security issue? Please [report it privately](https://github.com/xDaveN/c
 
 ## License
 
-[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), your choice. Each release attaches the licenses
-of what the exe includes: `THIRD-PARTY-LICENSES.txt` (libraries and fonts) and `RUST-LICENSES.html`
-(Rust standard library).
+[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), your choice. Licenses for everything bundled
+into the exe are attached to each release.
 
 Not affiliated with OpenAI or Anthropic.
