@@ -10,11 +10,11 @@ it sends one tiny message to kick off a fresh 5h limit.
 
 ## Why
 
-Your 5h limit starts with your first request. Start at 09:00, burn through it by 11:30, and
+With most providers, your 5h limit starts with your first request. Start at 09:00, burn through it by 11:30, and
 you're stuck until 14:00.
 
 If it had started at 07:00 instead, it would reset at 12:00, right when you run dry. That's
-all ClankShift does: it starts the 5h limit at a time you pick, while you're still having coffee.
+all ClankShift does. It starts the 5h limit at a time you pick and repeats it as often as you want.
 
 > [!NOTE]
 > This moves *when* resets happen. It doesn't give you more quota, and it does nothing for
@@ -31,7 +31,7 @@ You need x64 Windows 10/11 and the [Codex CLI](https://github.com/openai/codex) 
 > [!IMPORTANT]
 > Using Claude? Turn off **Usage credits / extra usage** in Claude's **Settings > Usage**.
 > ClankShift can't see that setting, so with it on, a start could spend paid credits once your
-> included quota is gone.
+> included quota is gone. I don't know how broke you are.
 
 Download `clankshift.exe` from [Releases](https://github.com/xDaveN/clankshift/releases), put it
 somewhere permanent and run it. To update, choose **Quit** in the tray, replace the file, then
@@ -66,35 +66,24 @@ it stays quiet: no provider polling, background provider processes, or network t
   and Codex says your plan has usage left, it sends one tiny request with a cheap model.
   If that's unclear, nothing is sent.
 - **Claude:** there's no free way to check, so the start request *is* the check: a one-line
-  Haiku prompt with tools, MCP and hooks off (~450 tokens).
+  Haiku prompt with tools, MCP and hooks disabled (~450 tokens).
 
 The tray only shows what the provider reported, never guesses. No live usage percentages,
-since that would need constant polling: use `/status` in Codex or `/usage` in Claude Code.
+since that would need constant polling.
 
-Settings are in `%APPDATA%\ClankShift\config.toml`; state and log in `%LOCALAPPDATA%\ClankShift\`.
+Settings/state/log are in `%LOCALAPPDATA%\ClankShift\`.
 
 ## Good to know
 
 - None of this is an official provider feature. If Codex or Claude change how limits work,
-  ClankShift may need an update.
-- Each start costs a tiny bit of quota. Claude may occasionally get one while a 5h limit is
+  ClankShift may break.
+- Each start can cost a tiny bit of quota. Claude may occasionally get one while a 5h limit is
   already running (say, you used it elsewhere), since it can't check first.
-- A start missed by more than an hour (PC asleep, ClankShift closed) is skipped, not made up
-  later. *On launch* covers that case. *Repeat* stops then too, or when a start fails.
 - A failed start is retried every 10 minutes for up to an hour, unless it may already have
   gone through. If a Claude start might have gone through without a clear answer, automatic
   Claude starts pause for about 5¼ hours to be safe.
 - Claude rounds its reset times down, so *Repeat* waits about 11 minutes past the shown reset.
-- After switching CLI accounts, the old account's reset time may show until it passes.
-
-## Building
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Design notes are in [docs/architecture.md](docs/architecture.md).
-Found a security issue? Please [report it privately](https://github.com/xDaveN/clankshift/security/advisories/new).
-
-## License
-
-[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), your choice. Licenses for everything bundled
-into the exe are attached to each release.
+- After switching CLI accounts, the old account's reset time may show until it passes,
+  but if you're using this tool you're probably not stacking subs anyways.
 
 Not affiliated with OpenAI or Anthropic.
