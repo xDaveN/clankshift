@@ -71,7 +71,7 @@ it stays quiet: no provider polling, background provider processes, or network t
 The tray only shows what the provider reported, never guesses. No live usage percentages,
 since that would need constant polling.
 
-Settings/state/log are in `%LOCALAPPDATA%\ClankShift\`.
+Settings are in `%APPDATA%\ClankShift\config.toml`; state and log in `%LOCALAPPDATA%\ClankShift\`.
 
 ## Good to know
 
@@ -85,5 +85,10 @@ Settings/state/log are in `%LOCALAPPDATA%\ClankShift\`.
 - Claude rounds its reset times down, so *Repeat* waits about 11 minutes past the shown reset.
 - After switching CLI accounts, the old account's reset time may show until it passes,
   but if you're using this tool you're probably not stacking subs anyways.
+
+## License
+
+[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), your choice. Found a security issue? Please
+[report it privately](https://github.com/xDaveN/clankshift/security/advisories/new).
 
 Not affiliated with OpenAI or Anthropic.
