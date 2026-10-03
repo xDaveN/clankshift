@@ -1,4 +1,4 @@
-# cargo-about: third-party license notices shipped with the release exe (see scripts/license-notices.sh).
+# cargo-about: third-party license notices embedded in the release exe (see scripts/license-notices.sh).
 targets = ["x86_64-pc-windows-msvc"]
 accepted = [
     "0BSD",

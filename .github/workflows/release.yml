@@ -1,7 +1,7 @@
 # release-plz keeps a release PR open with the next version + changelog (from Conventional Commits).
-# Merging it tags the version and creates a draft GitHub Release; the Windows job attaches the exe and
-# license notices, then publishes it. If that job fails, use "Re-run failed jobs" (re-running all jobs
-# finds the tag already released and builds nothing).
+# Merging it tags the version and creates a draft GitHub Release; the Windows job attaches the exe
+# (license notices embedded), then publishes it. If that job fails, use "Re-run failed jobs"
+# (re-running all jobs finds the tag already released and builds nothing).
 name: Release
 
 on:
@@ -72,23 +72,27 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release.outputs.tag }}
-      - run: cargo build --release --locked
-      # .cargo/config.toml links the C runtime statically; fail rather than ship an exe needing it.
-      - name: Check no VC++ runtime dependency
-        run: if (Select-String -Path target/release/clankshift.exe -Pattern vcruntime -SimpleMatch -Quiet) { throw 'clankshift.exe imports the VC++ runtime' }
-      # Crate, font and Rust standard library notices, from the toolchain that built the exe.
+      # Crate, font and Rust standard library notices, from the toolchain that builds the exe.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about
       - name: License notices
         shell: bash
         run: bash scripts/license-notices.sh target/notices
+      - run: cargo build --release --locked
+        env:
+          CLANKSHIFT_LICENSES: ${{ github.workspace }}/target/notices/LICENSES.txt
+      # .cargo/config.toml links the C runtime statically; fail rather than ship an exe needing it.
+      - name: Check no VC++ runtime dependency
+        run: if (Select-String -Path target/release/clankshift.exe -Pattern vcruntime -SimpleMatch -Quiet) { throw 'clankshift.exe imports the VC++ runtime' }
+      - name: Check embedded license notices
+        run: if (-not (Select-String -Path target/release/clankshift.exe -Pattern 'Copyright notices for The Rust Standard Library' -SimpleMatch -Quiet)) { throw 'clankshift.exe lacks the license notices' }
       # Same file name every release, so updating keeps the Start with Windows entry valid.
       # --clobber lets a re-run replace assets from a partly failed upload.
       - name: Upload and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload $env:TAG target/release/clankshift.exe target/notices/THIRD-PARTY-LICENSES.txt target/notices/RUST-LICENSES.html --clobber
+          gh release upload $env:TAG target/release/clankshift.exe --clobber
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           gh release edit $env:TAG --draft=false

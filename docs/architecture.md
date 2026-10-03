@@ -160,5 +160,5 @@ These are deliberate; change them only with a good reason.
 4. **Official CLIs, not private APIs.** ClankShift never reads provider credentials or calls
    undocumented HTTP endpoints; the CLIs handle authentication.
 5. **Releases via release-plz + GitHub Releases.** Conventional Commits drive versions and the
-   changelog; releases attach a portable x64 `clankshift.exe` and two license notices; nothing is
-   published to crates.io.
+   changelog; releases attach only a portable x64 `clankshift.exe`, with its license notices
+   embedded; nothing is published to crates.io.
