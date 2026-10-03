@@ -153,7 +153,11 @@ impl App {
         let sep = PredefinedMenuItem::separator;
         let menu = Menu::new();
         menu.append_items(&[
-            &MenuItem::new("ClankShift", false, None),
+            &MenuItem::new(
+                concat!("ClankShift v", env!("CARGO_PKG_VERSION")),
+                false,
+                None,
+            ),
             &items.status[0],
             &items.status[1],
             &sep(),
