@@ -50,7 +50,7 @@ pub fn run() {
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("ClankShift")
+            .with_title(concat!("ClankShift v", env!("CARGO_PKG_VERSION")))
             .with_icon(icon)
             .with_inner_size([480.0, 705.0])
             .with_resizable(false)
@@ -442,7 +442,6 @@ impl eframe::App for Settings {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("Settings");
-                    ui.weak(concat!("ClankShift v", env!("CARGO_PKG_VERSION")));
 
                     if let Some(e) = &self.load_error {
                         ui.add_space(12.0);
