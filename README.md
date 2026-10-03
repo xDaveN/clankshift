@@ -53,8 +53,8 @@ Everything lives in the tray menu:
 For a reset around 12:00, start at 07:00: turn on *Every day at 07:00*, or *On launch*
 plus *Start with Windows* if you usually log in around then.
 Another reset around 17:00 requires new usage around 12:00, or *Repeat*: after
-an automatic start, it starts the next 5h limit at each reset, for a set number of limits
-(counting one already running) or until stopped. The tray shows the progress.
+an automatic start, it starts the next 5h limit at each reset, a set number of times
+or until stopped. The tray shows the progress.
 
 ## How it works
 

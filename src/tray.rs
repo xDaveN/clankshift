@@ -117,7 +117,7 @@ impl App {
 
     /// Has a sequence that counted `n` 5h limits reached its count?
     fn sequence_full(&self, n: u32) -> bool {
-        matches!(self.config.keep_starting, KeepStarting::For(max) if n >= max)
+        matches!(self.config.keep_starting, KeepStarting::For(max) if n > max)
     }
 
     fn end_sequence(&mut self, p: Provider, why: &str) {
@@ -430,7 +430,7 @@ impl App {
             (Some(n @ 1..), KeepStarting::For(max)) => format!(
                 " | {}{}",
                 "▰".repeat(n as usize),
-                "▱".repeat(max.saturating_sub(n) as usize)
+                "▱".repeat(max.saturating_add(1).saturating_sub(n) as usize)
             ),
             (Some(1..), _) => " | ↻".to_string(),
             _ => String::new(),

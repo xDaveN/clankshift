@@ -291,7 +291,7 @@ fn keep_starting_picker(ui: &mut egui::Ui, value: &mut KeepStarting) {
         .show_ui(ui, |ui| {
             let count = match *value {
                 KeepStarting::For(n) => KeepStarting::For(n),
-                _ => KeepStarting::For(3),
+                _ => KeepStarting::For(2),
             };
             for k in [KeepStarting::Off, count, KeepStarting::UntilStopped] {
                 ui.selectable_value(value, k, text(k));
@@ -438,17 +438,6 @@ impl eframe::App for Settings {
                             });
                         }
                     });
-                    if self.cfg.auto_anchor
-                        && matches!(self.cfg.keep_starting, KeepStarting::For(_))
-                    {
-                        ui.label(
-                            RichText::new(
-                                "Repeat counts the first 5h limit, including one already running.",
-                            )
-                            .small()
-                            .color(p.weak),
-                        );
-                    }
 
                     section(ui, "General");
                     card(ui, |ui| {

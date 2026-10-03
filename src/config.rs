@@ -22,7 +22,7 @@ pub struct Config {
 #[serde(rename_all = "snake_case")]
 pub enum KeepStarting {
     Off,
-    /// This many 5h limits in total, including one already running.
+    /// This many more 5h limits after the first, which may be one already running.
     For(u32),
     UntilStopped,
 }
