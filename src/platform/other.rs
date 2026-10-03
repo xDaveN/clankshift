@@ -4,6 +4,10 @@ use std::process::{Child, Command};
 
 pub const EXE_SUFFIXES: &[&str] = &[""];
 
+pub fn current_path() -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+
 pub fn hide_window(_cmd: &mut Command) {}
 
 pub struct ProcessGuard;

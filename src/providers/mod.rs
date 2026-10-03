@@ -102,13 +102,12 @@ pub fn maybe_sent(error: &str) -> bool {
     error.ends_with(MAYBE_SENT)
 }
 
-/// Configured path, else the first `name{.exe,.cmd}` on PATH.
+/// Configured path, else the first `name{.exe,.cmd}` on `search_path`.
 fn resolve(command: &str, name: &str) -> Result<PathBuf, String> {
     if !command.trim().is_empty() {
         return Ok(PathBuf::from(command.trim()));
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
+    std::env::split_paths(&search_path())
         .flat_map(|dir| {
             platform::EXE_SUFFIXES
                 .iter()
@@ -116,6 +115,20 @@ fn resolve(command: &str, name: &str) -> Result<PathBuf, String> {
         })
         .find(|p| p.is_file())
         .ok_or_else(|| format!("{name} CLI {NOT_FOUND}"))
+}
+
+/// Our PATH, then the OS's current PATH entries it lacks: a launcher may have given us a reduced
+/// PATH, or a CLI was installed after we started. Provider processes get it too, so a launcher
+/// like npm's `codex.cmd` finds `node` the same way.
+fn search_path() -> std::ffi::OsString {
+    let ours = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(&ours).collect();
+    for dir in platform::current_path() {
+        if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or(ours)
 }
 
 /// Why `Session::spawn` failed. `launched`: the process did start, with its arguments (which
@@ -156,6 +169,7 @@ impl Session {
         let mut cmd = Command::new(program);
         cmd.args(args)
             .current_dir(std::env::temp_dir())
+            .env("PATH", search_path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -292,6 +306,48 @@ mod tests {
         assert!(!e.launched);
         assert!(is_not_found(&e.message), "{}", e.message);
         assert!(!is_not_found("model not found"));
+    }
+
+    /// Not a real test: runs with only the fake CLIs' folder on PATH, like a tray started by a
+    /// launcher with a reduced PATH.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn fake_reduced_path() {
+        // Our PATH comes first: the fake beats System32's whoami.exe on the current PATH.
+        assert!(resolve("", "whoami").unwrap().ends_with("whoami.cmd"));
+        // Only on the current PATH.
+        let program = resolve("", "where").unwrap();
+        assert!(program.ends_with("where.exe"), "{}", program.display());
+        // A launcher finds what it runs (as codex.cmd finds node).
+        let program = resolve("", "clankshift-fake").unwrap();
+        let mut s = Session::spawn(&program, &[], Duration::from_secs(10)).unwrap();
+        assert_eq!(s.next_line(), Ok(Some("ok".into())), "{}", s.stderr_tail());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn finds_cli_missing_from_our_path() {
+        let dir = std::env::temp_dir().join("clankshift-reduced-path");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("whoami.cmd"), "@echo fake\r\n").unwrap();
+        std::fs::write(
+            dir.join("clankshift-fake.cmd"),
+            "@where.exe /q whoami.exe && echo ok\r\n",
+        )
+        .unwrap();
+        let args = [
+            "providers::tests::fake_reduced_path",
+            "--exact",
+            "--ignored",
+        ];
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args(args)
+            .env("PATH", &dir)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && text.contains("1 passed"), "{text}");
     }
 
     /// Not a real test: a provider stand-in that writes stdout and stderr nonstop.
