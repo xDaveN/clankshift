@@ -126,7 +126,11 @@ gives up. Retries are in memory only. Changing when automatic starts run (the au
 on-launch, daily time, or a provider's switch) cancels pending retries and any retry of a start
 still running; CLI path/model edits do not. Failed manual starts are not retried. A Claude failure after
 the request was launched (timeout, no 5h limit reported) is not retried either: the request may
-have started the 5h limit, and repeating it would only spend quota. The same applies to a Codex
+have started the 5h limit, and repeating it would only spend quota. One exception is retried: Claude
+Code reporting its sign-in refresh locked by another Claude Code process, with no other output
+than setup events. That attempt failed before sending, though an unreported earlier attempt in
+the same process cannot be ruled out; the worst case is one tiny request in a running 5h limit,
+whose reply reports its reset. The same applies to a Codex
 start that completed but could not be confirmed. Other Codex retries are safe because every Codex
 start is preceded by fresh status reads. A usable 5h reset Claude reports is kept even
 if the request then fails or its output breaks off (timeout); a missing or malformed reset never
