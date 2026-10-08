@@ -513,31 +513,20 @@ impl App {
 
 impl ApplicationHandler<UserEvent> for App {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-        match cause {
-            StartCause::Init => {
-                if let Err(e) = self.build_tray() {
-                    log(&format!("could not create tray icon: {e}"));
-                    event_loop.exit();
-                    return;
-                }
-                if let Some((tray, _)) = &self.tray
-                    && !platform::notify(tray, "ClankShift is running in the system tray.")
-                {
-                    log("could not show the startup notification");
-                }
-                if self.config.auto_anchor && self.config.anchor_on_start {
-                    self.anchor_enabled("ClankShift started", now());
-                }
-                self.check_sequences();
-                self.refresh_menu();
+        if cause == StartCause::Init {
+            if let Err(e) = self.build_tray() {
+                log(&format!("could not create tray icon: {e}"));
+                event_loop.exit();
+                return;
             }
-            StartCause::ResumeTimeReached { .. } => {
-                self.check_retries();
-                self.check_daily();
-                self.check_sequences();
-                self.refresh_menu();
+            if let Some((tray, _)) = &self.tray
+                && !platform::notify(tray, "ClankShift is running in the system tray.")
+            {
+                log("could not show the startup notification");
             }
-            _ => {}
+            if self.config.auto_anchor && self.config.anchor_on_start {
+                self.anchor_enabled("ClankShift started", now());
+            }
         }
     }
 
@@ -586,10 +575,17 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
         }
-        self.refresh_menu();
     }
 
+    /// After every wake's events, whatever woke it: winit reports a timer that fires a hair
+    /// before its deadline as cancelled, and `next_wake` no longer covers a moment just passed.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if !event_loop.exiting() {
+            self.check_retries();
+            self.check_daily();
+            self.check_sequences();
+            self.refresh_menu();
+        }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_wake()));
     }
 
