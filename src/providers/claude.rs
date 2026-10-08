@@ -86,9 +86,10 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, i64), String> {
     reply(&mut s, started)
 }
 
-/// The request's result. From launch on it may have reached Claude, so a failure is not retried.
+/// The request's result. From launch on it may have reached Claude, so a failure is not retried,
+/// except `refresh_locked`.
 fn reply(s: &mut Session, started: i64) -> Result<(Outcome, i64), String> {
-    let resets_at = read_reply(s, started).map_err(|e| format!("{e} {MAYBE_SENT}"))?;
+    let resets_at = read_reply(s, started)?;
     let outcome = if started_now(resets_at, started) {
         Outcome::Anchored
     } else {
@@ -104,10 +105,46 @@ fn read_reply(s: &mut Session, started: i64) -> Result<i64, String> {
             Ok(Some(line)) => lines.push(line),
             Ok(None) => break,
             // A reset Claude already reported survives the broken stream; nothing else does.
-            Err(e) => return parse_stream(&lines, started, now()).map_err(|_| e),
+            Err(e) => {
+                return parse_stream(&lines, started, now())
+                    .map_err(|_| format!("{e} {MAYBE_SENT}"));
+            }
         }
     }
-    parse_stream(&lines, started, now()).map_err(|e| if e.is_empty() { s.stderr_tail() } else { e })
+    parse_stream(&lines, started, now()).map_err(|e| {
+        let e = if e.is_empty() { s.stderr_tail() } else { e };
+        if refresh_locked(&lines) {
+            e
+        } else {
+            format!("{e} {MAYBE_SENT}")
+        }
+    })
+}
+
+/// Claude Code (2.1.293) fails this way while building its API client, once the sign-in has
+/// expired and another Claude Code process holds the refresh lock (e.g. one started at login).
+const REFRESH_LOCKED: &str =
+    "Failed to refresh OAuth token: another Claude Code process is refreshing it";
+
+/// A `REFRESH_LOCKED` failure with no sign of an API attempt: only setup events and one result.
+/// Retried despite some uncertainty: this attempt failed before its request went out, but an
+/// earlier one in the same process cannot be excluded (Claude Code may rebuild its client on a
+/// retry without reporting it). Worst case a retry spends one tiny request in a 5h limit that is
+/// already running, and reports its reset.
+fn refresh_locked(lines: &[String]) -> bool {
+    let Ok(events) = lines
+        .iter()
+        .map(|l| serde_json::from_str::<Value>(l))
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+    let results: Vec<&Value> = events.iter().filter(|e| e["type"] == "result").collect();
+    let setup =
+        |e: &Value| e["type"] == "system" && (e["subtype"] == "init" || e["subtype"] == "status");
+    matches!(results[..], [r] if r["is_error"] == true
+        && r["result"].as_str().is_some_and(|t| t.starts_with(REFRESH_LOCKED)))
+        && events.iter().all(|e| e["type"] == "result" || setup(e))
 }
 
 const HEADERS: &str = "ANTHROPIC_CUSTOM_HEADERS";
@@ -852,5 +889,42 @@ mod tests {
         assert_eq!(parse(&limited).unwrap_err(), "Claude: limit reached");
         let no_event = lines(&[r#"{"type":"result","is_error":false,"result":"OK"}"#]);
         assert!(parse(&no_event).unwrap_err().contains("did not report"));
+    }
+
+    /// Claude Code 2.1.293 output for a refresh-lock failure before any API attempt: shape read
+    /// from its stream-json writer, not captured (the failing run's output was not kept).
+    const REFRESH_LOCKED_STREAM: &str = concat!(
+        r#"{"type":"system","subtype":"init"}"#,
+        "\n",
+        r#"{"type":"system","subtype":"status","status":"requesting"}"#,
+        "\n",
+        r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again"}"#,
+    );
+
+    #[test]
+    fn refresh_lock_failure_is_retryable_only_before_any_api_attempt() {
+        let stream: Vec<&str> = REFRESH_LOCKED_STREAM.lines().collect();
+        assert!(refresh_locked(&lines(&stream)));
+        // Any sign of an earlier attempt, unknown output, or a second result: not retried.
+        let (init, status, result) = (stream[0], stream[1], stream[2]);
+        for extra in [
+            r#"{"type":"system","subtype":"api_retry","attempt":1}"#,
+            r#"{"type":"assistant","message":{}}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"resetsAt":0,"rateLimitType":"five_hour"}}"#,
+            "not json",
+            result,
+        ] {
+            assert!(
+                !refresh_locked(&lines(&[init, status, extra, result])),
+                "{extra}"
+            );
+        }
+        // Nor is any other result, even one ending like a retryable error.
+        for other in [
+            r#"{"type":"result","is_error":true,"result":"Failed (retryable)"}"#,
+            r#"{"type":"result","is_error":false,"result":"Failed to refresh OAuth token: another Claude Code process is refreshing it"}"#,
+        ] {
+            assert!(!refresh_locked(&lines(&[init, other])), "{other}");
+        }
     }
 }
