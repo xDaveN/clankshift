@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/xDaveN/clankshift/compare/v0.1.0...v0.1.1) - 2026-10-08
+
+### Fixed
+
+- run scheduled checks on every event loop wake ([#48](https://github.com/xDaveN/clankshift/pull/48))
+- retry Claude start after sign-in refresh lock failure ([#47](https://github.com/xDaveN/clankshift/pull/47))
+
+### Other
+
+- add terms note and audience note to README ([#45](https://github.com/xDaveN/clankshift/pull/45))
+
 ## [0.1.0](https://github.com/xDaveN/clankshift/releases/tag/v0.1.0) - 2026-10-03
 
 Initial release for x64 Windows 10/11.
