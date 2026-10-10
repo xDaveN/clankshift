@@ -126,7 +126,8 @@ fn read_reply(s: &mut Session, started: i64) -> Result<i64, String> {
 const REFRESH_LOCKED: &str =
     "Failed to refresh OAuth token: another Claude Code process is refreshing it";
 
-/// A `REFRESH_LOCKED` failure with no sign of an API attempt: only setup events and one result.
+/// A `REFRESH_LOCKED` failure with no sign of an API attempt: only setup events, Claude Code's
+/// own `<synthetic>` error message for it (no API request id), and one result.
 /// Retried despite some uncertainty: this attempt failed before its request went out, but an
 /// earlier one in the same process cannot be excluded (Claude Code may rebuild its client on a
 /// retry without reporting it). Worst case a retry spends one tiny request in a 5h limit that is
@@ -140,11 +141,22 @@ fn refresh_locked(lines: &[String]) -> bool {
         return false;
     };
     let results: Vec<&Value> = events.iter().filter(|e| e["type"] == "result").collect();
+    let locked = |t: &Value| t.as_str().is_some_and(|t| t.starts_with(REFRESH_LOCKED));
     let setup =
         |e: &Value| e["type"] == "system" && (e["subtype"] == "init" || e["subtype"] == "status");
-    matches!(results[..], [r] if r["is_error"] == true
-        && r["result"].as_str().is_some_and(|t| t.starts_with(REFRESH_LOCKED)))
-        && events.iter().all(|e| e["type"] == "result" || setup(e))
+    // Seen 2026-10-10 (2.1.295): the error is also reported as a local assistant message.
+    let synthetic = |e: &Value| {
+        let m = &e["message"];
+        e["type"] == "assistant"
+            && e["error"] == "server_error"
+            && e.get("request_id").is_none()
+            && m["model"] == "<synthetic>"
+            && matches!(m["content"].as_array().map(Vec::as_slice), Some([c]) if locked(&c["text"]))
+    };
+    matches!(results[..], [r] if r["is_error"] == true && locked(&r["result"]))
+        && events
+            .iter()
+            .all(|e| e["type"] == "result" || setup(e) || synthetic(e))
 }
 
 const HEADERS: &str = "ANTHROPIC_CUSTOM_HEADERS";
@@ -898,6 +910,8 @@ mod tests {
         "\n",
         r#"{"type":"system","subtype":"status","status":"requesting"}"#,
         "\n",
+        r#"{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again"}]},"parent_tool_use_id":null,"error":"server_error"}"#,
+        "\n",
         r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again"}"#,
     );
 
@@ -906,10 +920,12 @@ mod tests {
         let stream: Vec<&str> = REFRESH_LOCKED_STREAM.lines().collect();
         assert!(refresh_locked(&lines(&stream)));
         // Any sign of an earlier attempt, unknown output, or a second result: not retried.
-        let (init, status, result) = (stream[0], stream[1], stream[2]);
+        let (init, status, result) = (stream[0], stream[1], stream[3]);
+        let sent = stream[2].replace(r#""error""#, r#""request_id":"req_1","error""#);
         for extra in [
             r#"{"type":"system","subtype":"api_retry","attempt":1}"#,
             r#"{"type":"assistant","message":{}}"#,
+            &sent,
             r#"{"type":"rate_limit_event","rate_limit_info":{"resetsAt":0,"rateLimitType":"five_hour"}}"#,
             "not json",
             result,

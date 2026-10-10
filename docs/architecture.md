@@ -128,7 +128,7 @@ still running; CLI path/model edits do not. Failed manual starts are not retried
 the request was launched (timeout, no 5h limit reported) is not retried either: the request may
 have started the 5h limit, and repeating it would only spend quota. One exception is retried: Claude
 Code reporting its sign-in refresh locked by another Claude Code process, with no other output
-than setup events. That attempt failed before sending, though an unreported earlier attempt in
+than setup events and Claude Code's own local error message for it. That attempt failed before sending, though an unreported earlier attempt in
 the same process cannot be ruled out; the worst case is one tiny request in a running 5h limit,
 whose reply reports its reset. The same applies to a Codex
 start that completed but could not be confirmed. Other Codex retries are safe because every Codex
