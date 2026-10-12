@@ -594,8 +594,9 @@ impl ApplicationHandler<UserEvent> for App {
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
 }
 
-/// Record a finished start in the provider's state. True if it failed before anything could
-/// reach the provider, so an automatic start may be retried. `now` is after the operation's
+/// Record a finished start in the provider's state. True if an automatic start may be retried:
+/// it failed before anything could reach the provider, or (Codex) the retry's status reads will
+/// see what it sent. `now` is after the operation's
 /// processes ended, so a request it launched reached the provider, if at all, before then.
 pub(crate) fn apply(
     st: &mut ProviderState,

@@ -122,20 +122,24 @@ pub fn anchor(cfg: &ProviderConfig) -> Result<(Outcome, i64), String> {
     }
     second.check_included()?;
     exec(&program, &model)?;
-    let resets_at = read(&program, false).and_then(|(after, _)| {
-        confirm(&after, || {
-            std::thread::sleep(Duration::from_secs(RECHECK_SECS));
-            read(&program, false).map(|(again, _)| again)
-        })
-    });
-    // The request was sent: retrying could start another 5h limit or spend more.
-    let resets_at = resets_at.map_err(|e| format!("{e} {MAYBE_SENT}"))?;
+    // A read that fails here (seen 2026-10-12: npm replacing codex.cmd) gives no status, so the
+    // start stays retryable like a failed `exec`: a retry reads status first and finds the 5h
+    // limit this request started.
+    let unread = |e| format!("could not confirm the start: {e}");
+    let (after, _) = read(&program, false).map_err(unread)?;
+    let resets_at = confirm(&after, || {
+        std::thread::sleep(Duration::from_secs(RECHECK_SECS));
+        read(&program, false)
+            .map(|(again, _)| again)
+            .map_err(unread)
+    })?;
     Ok((Outcome::Anchored, resets_at))
 }
 
 /// Reset of the 5h limit a completed start began, from the read `after` it. A just-started
 /// limit looks like the placeholder in one read, so unless it is `running` it is read `again`:
-/// only a fixed reset confirms the start. Still moving (or unclear): no reset is reported.
+/// only a fixed reset confirms the start. Still moving (or unclear): no reset is reported, and
+/// since retrying could start another 5h limit or spend more, the error is possibly-sent.
 fn confirm(
     after: &Snapshot,
     again: impl FnOnce() -> Result<Snapshot, String>,
@@ -147,7 +151,9 @@ fn confirm(
     if again.running() || moved(after, &again) == Ok(false) {
         return Ok(again.resets_at);
     }
-    Err("Codex did not confirm that the 5h limit started".into())
+    Err(format!(
+        "Codex did not confirm that the 5h limit started {MAYBE_SENT}"
+    ))
 }
 
 /// One short app-server session: rate limits, then the model list if `with_models` (else `Null`).
@@ -566,10 +572,17 @@ mod tests {
         // Still the moving placeholder: not reported as started.
         let after = snap(placeholder(s3 * 1000 + 600, true), s3, 600);
         let again = || Ok(snap(placeholder(s4 * 1000 + 600, true), s4, 600));
-        assert!(confirm(&after, again).is_err());
-        // Unclear or failed second read: not started either.
-        assert!(confirm(&after, || Ok(snap(s4 + WINDOW_SECS + 30, s4, 600))).is_err());
-        assert!(confirm(&after, || Err("exited early".into())).is_err());
+        let sent = |r: Result<i64, String>| r.is_err_and(|e| crate::providers::maybe_sent(&e));
+        assert!(sent(confirm(&after, again)));
+        // Unclear second read: not started either.
+        assert!(sent(confirm(&after, || Ok(snap(
+            s4 + WINDOW_SECS + 30,
+            s4,
+            600
+        )))));
+        // Failed second read: nothing observed, so a retry (which reads first) may settle it.
+        let failed = confirm(&after, || Err("exited early".into()));
+        assert_eq!(failed, Err("exited early".into()));
         // Unknown or malformed usage on a moving reset proves nothing, on either read.
         for used in [None, Some(-1)] {
             let odd = |s: Snapshot| Snapshot { used, ..s };

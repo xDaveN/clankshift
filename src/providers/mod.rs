@@ -94,8 +94,10 @@ pub fn is_not_found(error: &str) -> bool {
     error.ends_with(NOT_FOUND)
 }
 
-/// End of every error after a request may have reached the provider (and started a 5h limit).
-/// Retrying could spend quota on a limit that is already running, so the tray does not.
+/// End of every error after which a request may have reached the provider (and started a 5h
+/// limit) and no fresh status can tell. Retrying could spend quota on a limit that is already
+/// running, so the tray does not. (Codex reads status before every start, so most of its
+/// failures after sending stay retryable.)
 const MAYBE_SENT: &str = "(may have been sent; not retried)";
 
 pub fn maybe_sent(error: &str) -> bool {
