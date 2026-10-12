@@ -42,9 +42,10 @@ only: the model is chosen from the first read, so nothing slow sits between this
 request. Only if the reset moved by the time between the two status replies (measured from
 request to reply, within Codex's 1 s rounding) does one ephemeral `codex exec` with the cheapest
 listed model at low effort follow, then limits are re-read to confirm the start: a fresh-looking
-reset is read again 10 s later and must stay fixed. If it still moves, is unclear, or a read
-fails, no reset is recorded and the start is treated like a Claude request that may have been
-sent (below). A fixed reset before the start means a just-started window: nothing is sent. A
+reset is read again 10 s later and must stay fixed. If it still moves or is unclear, no reset is
+recorded and the start is treated like a Claude request that may have been sent (below). A read
+that fails (seen when npm was updating Codex) gives no usable status, so the start may be retried
+like a failed request: the retry reads status first and finds the 5h limit if it started. A fixed reset before the start means a just-started window: nothing is sent. A
 reply slower than 2 s, an expired reset, one more than 5h away, or any other change (such as a
 window started during the check) fails without sending.
 ClankShift still reads Codex status only when an anchor is due.
@@ -131,7 +132,7 @@ Code reporting its sign-in refresh locked by another Claude Code process, with n
 than setup events and Claude Code's own local error message for it. That attempt failed before sending, though an unreported earlier attempt in
 the same process cannot be ruled out; the worst case is one tiny request in a running 5h limit,
 whose reply reports its reset. The same applies to a Codex
-start that completed but could not be confirmed. Other Codex retries are safe because every Codex
+start that completed but whose status afterwards did not show it started. Other Codex retries are safe because every Codex
 start is preceded by fresh status reads. A usable 5h reset Claude reports is kept even
 if the request then fails or its output breaks off (timeout); a missing or malformed reset never
 hides such a failure.
